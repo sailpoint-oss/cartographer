@@ -1,0 +1,146 @@
+name: "Cartographer - OpenAPI Extraction"
+description: "Extract an OpenAPI spec from service source code using .cartographer/cartographer.yaml."
+branding:
+  icon: "map"
+  color: "blue"
+
+inputs:
+  cartographer-dir:
+    description: "Path to the .cartographer directory containing cartographer.yaml"
+    default: ".cartographer"
+  project-root:
+    description: "Service project root directory"
+    default: "."
+  go-version:
+    description: "Go version used to build Cartographer"
+    default: "1.25.x"
+  commit:
+    description: "Commit the updated spec back to the repo (set to 'false' to disable)"
+    default: "true"
+  commit-message:
+    description: "Commit message when auto-committing"
+    default: "chore: update OpenAPI spec [cartographer]"
+  spec-path:
+    description: "Output path for the generated spec"
+    default: ".cartographer/openapi.yaml"
+  emit-diff:
+    description: "Include a truncated git diff of the generated spec in the action outputs"
+    default: "false"
+
+outputs:
+  spec-path:
+    description: "Path to the generated OpenAPI spec"
+    value: ${{ steps.extract.outputs.spec-path }}
+  changed:
+    description: "Whether the spec changed ('true' or 'false')"
+    value: ${{ steps.status.outputs.changed }}
+  diff:
+    description: "Git diff of the generated spec when emit-diff is enabled (empty otherwise)"
+    value: ${{ steps.status.outputs.diff }}
+  error:
+    description: "Sanitized error message if extraction failed (empty on success)"
+    value: ${{ steps.extract.outputs.error }}
+  operations:
+    description: "Number of operations in the generated spec"
+    value: ${{ steps.summary.outputs.operations }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: true
+        cache-dependency-path: ${{ github.action_path }}/cartographer/go.sum
+
+    - name: Build cartographer
+      shell: bash
+      run: cd "${{ github.action_path }}/cartographer" && go build -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=action" -o cartographer .
+
+    - name: Extract OpenAPI spec
+      id: extract
+      shell: bash
+      env:
+        CARTOGRAPHER_BIN: ${{ github.action_path }}/cartographer/cartographer
+        CART_DIR: ${{ inputs.cartographer-dir }}
+        PROJECT_ROOT: ${{ inputs.project-root }}
+        SPEC_PATH: ${{ inputs.spec-path }}
+      run: |
+        if ! "$CARTOGRAPHER_BIN" extract --dir "$CART_DIR" --root "$PROJECT_ROOT" --output "$SPEC_PATH" 2>extract_err.txt; then
+          echo "error=Cartographer extraction failed. Re-run locally for full diagnostics." >> "$GITHUB_OUTPUT"
+          echo "::error::Cartographer extraction failed. Re-run locally for full diagnostics."
+          exit 1
+        fi
+        echo "spec-path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
+        echo "error=" >> "$GITHUB_OUTPUT"
+
+    - name: Inspect generated spec
+      id: status
+      shell: bash
+      env:
+        SPEC_PATH: ${{ inputs.spec-path }}
+        EMIT_DIFF: ${{ inputs.emit-diff }}
+      run: |
+        changed="false"
+        diff_output=""
+
+        if [ -f "$SPEC_PATH" ] && ! git diff --quiet -- "$SPEC_PATH" 2>/dev/null; then
+          changed="true"
+        fi
+
+        if [ "$EMIT_DIFF" = "true" ] && [ "$changed" = "true" ]; then
+          diff_output=$(git diff -- "$SPEC_PATH" 2>/dev/null || true)
+          if [ ${#diff_output} -gt 20000 ]; then
+            diff_output="${diff_output:0:20000}...(truncated)"
+          fi
+        fi
+
+        {
+          echo "changed=$changed"
+          echo "diff<<DIFF_EOF"
+          echo "$diff_output"
+          echo "DIFF_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Generate step summary
+      id: summary
+      shell: bash
+      env:
+        SPEC_PATH: ${{ inputs.spec-path }}
+      run: |
+        if [ -f "$SPEC_PATH" ]; then
+          ops=$(python -c 'import pathlib,re,sys; print(len(re.findall(r"\"operationId\"\\s*:|operationId\\s*:", pathlib.Path(sys.argv[1]).read_text())))' "$SPEC_PATH")
+          echo "operations=$ops" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Cartographer Extraction Summary"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Spec path | \`$SPEC_PATH\` |"
+            echo "| Operations | $ops |"
+            echo "| Changed | ${{ steps.status.outputs.changed == 'true' && 'Yes' || 'No' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "operations=0" >> "$GITHUB_OUTPUT"
+          echo "::warning::No spec file generated at $SPEC_PATH"
+        fi
+
+    - name: Commit updated spec
+      id: commit
+      if: inputs.commit == 'true' && steps.status.outputs.changed == 'true'
+      shell: bash
+      env:
+        SPEC_PATH: ${{ inputs.spec-path }}
+        COMMIT_MSG: ${{ inputs.commit-message }}
+      run: |
+        git config --local user.name "cartographer[bot]"
+        git config --local user.email "cartographer[bot]@users.noreply.github.com"
+        git add "$SPEC_PATH"
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          git commit -m "$COMMIT_MSG"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi

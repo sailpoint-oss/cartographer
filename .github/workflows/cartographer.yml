@@ -1,0 +1,68 @@
+name: Cartographer CI
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - cartographer/**
+      - action.yml
+      - README.md
+      - CLAUDE.md
+      - Makefile
+  pull_request:
+    paths:
+      - cartographer/**
+      - action.yml
+      - README.md
+      - CLAUDE.md
+      - Makefile
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: cartographer/go.sum
+
+      - name: Build cartographer
+        run: |
+          cd cartographer
+          go build -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=ci-${{ github.sha }}" -o cartographer .
+
+      - name: Test cartographer
+        run: |
+          cd cartographer
+          go test ./... -coverprofile=coverage.out -count=1
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          cd cartographer
+          if [ -f coverage.out ]; then
+            total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}')
+            {
+              echo "## Cartographer Coverage"
+              echo "| Metric | Value |"
+              echo "|--------|-------|"
+              echo "| Total coverage | $total |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cartographer-coverage
+          path: cartographer/coverage.out
+          if-no-files-found: ignore

@@ -1,0 +1,88 @@
+components:
+    schemas:
+        ErrorResponse:
+            properties:
+                detailCode:
+                    type: string
+                messages:
+                    items:
+                        properties:
+                            locale:
+                                type: string
+                            localeOrigin:
+                                type: string
+                            text:
+                                type: string
+                        type: object
+                    type: array
+                trackingId:
+                    type: string
+            type: object
+info:
+    title: Inheritance Test
+    version: "1.0"
+openapi: 3.0.3
+paths:
+    /api/v1/users/{id}:
+        get:
+            description: Retrieve a single User by its unique identifier.
+            operationId: getUser
+            parameters:
+                - description: The unique identifier of the resource.
+                  example: 2c91808a7813090a017814121919ecca
+                  in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+                  style: simple
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/BaseResource'
+                                    - properties:
+                                        email:
+                                            type: string
+                                        name:
+                                            type: string
+                                      type: object
+                    description: User
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                    description: Bad Request - Invalid input parameters
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                    description: Unauthorized - Authentication required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                    description: Forbidden - Insufficient permissions
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                    description: Not Found - Resource does not exist
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                    description: Internal Server Error
+            summary: Get User
+            tags:
+                - User
+tags:
+    - description: Operations related to User
+      name: User

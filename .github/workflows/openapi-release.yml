@@ -1,0 +1,177 @@
+name: Cartographer Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - cartographer/**
+      - action.yml
+      - Makefile
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cartographer-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message || '', '[skip release]') }}
+    outputs:
+      tag_name: ${{ steps.tag.outputs.new_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: cartographer/go.sum
+
+      - name: Vet cartographer
+        run: cd cartographer && go vet ./...
+
+      - name: Build cartographer
+        run: |
+          cd cartographer
+          go build -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=ci-${{ github.sha }}" -o cartographer .
+
+      - name: Test cartographer
+        run: cd cartographer && go test ./... -count=1
+
+      - name: Bump version and push tag
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.new_tag }}
+          generate_release_notes: true
+
+  build-assets:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: release
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary_name: cartographer
+            archive_ext: tar.gz
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            binary_name: cartographer
+            archive_ext: tar.gz
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            binary_name: cartographer
+            archive_ext: tar.gz
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+            binary_name: cartographer
+            archive_ext: tar.gz
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            binary_name: cartographer.exe
+            archive_ext: zip
+    steps:
+      - name: Checkout tagged release
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release.outputs.tag_name }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: cartographer/go.sum
+
+      - name: Build release binary
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          staging_dir="release-staging/cartographer_${{ needs.release.outputs.tag_name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p "$staging_dir"
+          cd cartographer
+          go build \
+            -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=${{ needs.release.outputs.tag_name }} -X github.com/sailpoint-oss/cartographer/cmd.Commit=${{ github.sha }} -X github.com/sailpoint-oss/cartographer/cmd.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "../$staging_dir/${{ matrix.binary_name }}" .
+
+      - name: Package tarball
+        if: matrix.archive_ext == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_name="cartographer_${{ needs.release.outputs.tag_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}"
+          tar -czf "$asset_name" -C release-staging "cartographer_${{ needs.release.outputs.tag_name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+
+      - name: Package zip
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          $assetName = "cartographer_${{ needs.release.outputs.tag_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}"
+          $stagingDir = "release-staging/cartographer_${{ needs.release.outputs.tag_name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          Compress-Archive -Path $stagingDir -DestinationPath $assetName
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cartographer-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
+          path: cartographer_${{ needs.release.outputs.tag_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}
+
+  publish-assets:
+    needs:
+      - release
+      - build-assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: cartographer-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd release-assets
+          sha256sum cartographer_* > SHA256SUMS.txt
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cartographer-release-assets
+          if-no-files-found: error
+          path: release-assets/*
+
+      - name: Attach release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$TAG_NAME" release-assets/* --clobber

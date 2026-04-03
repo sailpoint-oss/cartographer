@@ -1,0 +1,51 @@
+name: Cartographer PR Check
+
+on:
+  pull_request:
+    paths:
+      - cartographer/**
+      - action.yml
+      - README.md
+      - CLAUDE.md
+      - Makefile
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: cartographer/go.sum
+
+      - name: Build cartographer
+        id: build
+        run: |
+          cd cartographer
+          go build -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=pr-${{ github.sha }}" -o cartographer .
+
+      - name: Test cartographer
+        id: test
+        run: |
+          cd cartographer
+          go test ./... -count=1
+
+      - name: PR summary
+        if: always()
+        run: |
+          {
+            echo "## Cartographer PR Check"
+            echo ""
+            echo "- Build: ${{ steps.build.conclusion }}"
+            echo "- Tests: ${{ steps.test.conclusion }}"
+            echo "- Scope: extraction CLI, extraction library, and extraction action"
+          } >> "$GITHUB_STEP_SUMMARY"
