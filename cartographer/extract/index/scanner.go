@@ -31,8 +31,13 @@ func (s *Scanner) ScanDir(root string) error {
 		}
 		if d.IsDir() {
 			base := d.Name()
-			// Skip common non-source directories
-			if base == "node_modules" || base == ".git" || base == "build" || base == "target" || base == "dist" || base == "__pycache__" {
+			// Skip common non-source directories across languages.
+			// Python virtual envs (.venv / venv / env) and the ruff/mypy
+			// caches can contain huge amounts of unrelated code that would
+			// balloon the index and slow scans down.
+			if base == "node_modules" || base == ".git" || base == "build" || base == "target" || base == "dist" ||
+				base == "__pycache__" || base == ".venv" || base == "venv" || base == ".mypy_cache" ||
+				base == ".pytest_cache" || base == ".ruff_cache" || base == ".tox" || base == ".eggs" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -61,6 +66,8 @@ func (s *Scanner) scanFile(path string) error {
 		s.scanJavaFile(path, source, tree)
 	case "typescript":
 		s.scanTypeScriptFile(path, source, tree)
+	case "python":
+		s.scanPythonFile(path, source, tree)
 	}
 
 	return nil
@@ -72,6 +79,8 @@ func languageExtension(lang string) string {
 		return ".java"
 	case "typescript":
 		return ".ts"
+	case "python":
+		return ".py"
 	default:
 		return ""
 	}

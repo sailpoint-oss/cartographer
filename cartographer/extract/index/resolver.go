@@ -1,6 +1,7 @@
 package index
 
 import (
+	"maps"
 	"strconv"
 	"strings"
 
@@ -8,9 +9,9 @@ import (
 )
 
 // ToOpenAPISchema converts a TypeDecl to an OpenAPI schema object.
-func (idx *Index) ToOpenAPISchema(decl *TypeDecl, visited map[string]bool) map[string]interface{} {
+func (idx *Index) ToOpenAPISchema(decl *TypeDecl, visited map[string]bool) map[string]any {
 	if decl == nil {
-		return map[string]interface{}{"type": "object"}
+		return map[string]any{"type": "object"}
 	}
 
 	// Circular reference guard
@@ -18,7 +19,7 @@ func (idx *Index) ToOpenAPISchema(decl *TypeDecl, visited map[string]bool) map[s
 		visited = make(map[string]bool)
 	}
 	if visited[decl.Qualified] {
-		return map[string]interface{}{"$ref": "#/components/schemas/" + decl.Name}
+		return map[string]any{"$ref": "#/components/schemas/" + decl.Name}
 	}
 	visited[decl.Qualified] = true
 
@@ -30,12 +31,12 @@ func (idx *Index) ToOpenAPISchema(decl *TypeDecl, visited map[string]bool) map[s
 	}
 }
 
-func (idx *Index) enumToSchema(decl *TypeDecl) map[string]interface{} {
-	schema := map[string]interface{}{
+func (idx *Index) enumToSchema(decl *TypeDecl) map[string]any {
+	schema := map[string]any{
 		"type": "string",
 	}
 	if len(decl.EnumValues) > 0 {
-		values := make([]interface{}, len(decl.EnumValues))
+		values := make([]any, len(decl.EnumValues))
 		for i, v := range decl.EnumValues {
 			values[i] = v
 		}
@@ -45,22 +46,22 @@ func (idx *Index) enumToSchema(decl *TypeDecl) map[string]interface{} {
 	return schema
 }
 
-func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[string]interface{} {
+func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[string]any {
 	// Improvement #4: Discriminator support for @JsonTypeInfo/@JsonSubTypes
 	if decl.DiscriminatorProperty != "" && len(decl.DiscriminatorMapping) > 0 {
-		schema := map[string]interface{}{}
+		schema := map[string]any{}
 		if decl.Description != "" {
 			schema["description"] = decl.Description
 		}
-		discriminator := map[string]interface{}{
+		discriminator := map[string]any{
 			"propertyName": decl.DiscriminatorProperty,
 		}
-		mapping := make(map[string]interface{})
-		var oneOf []interface{}
+		mapping := make(map[string]any)
+		var oneOf []any
 		for discValue, typeName := range decl.DiscriminatorMapping {
 			ref := "#/components/schemas/" + typeName
 			mapping[discValue] = ref
-			oneOf = append(oneOf, map[string]interface{}{"$ref": ref})
+			oneOf = append(oneOf, map[string]any{"$ref": ref})
 		}
 		discriminator["mapping"] = mapping
 		schema["discriminator"] = discriminator
@@ -69,7 +70,7 @@ func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[str
 		return schema
 	}
 
-	schema := map[string]interface{}{
+	schema := map[string]any{
 		"type": "object",
 	}
 
@@ -89,9 +90,9 @@ func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[str
 			superName = superName[:openIdx]
 		}
 		ownSchema := idx.buildOwnFieldsSchema(decl, visited)
-		schema = map[string]interface{}{
-			"allOf": []interface{}{
-				map[string]interface{}{
+		schema = map[string]any{
+			"allOf": []any{
+				map[string]any{
 					"$ref": "#/components/schemas/" + superName,
 				},
 				ownSchema,
@@ -104,7 +105,7 @@ func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[str
 			schema["deprecated"] = true
 		}
 		if len(decl.Interfaces) > 0 {
-			ifaces := make([]interface{}, len(decl.Interfaces))
+			ifaces := make([]any, len(decl.Interfaces))
 			for i, iface := range decl.Interfaces {
 				ifaces[i] = iface
 			}
@@ -119,7 +120,7 @@ func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[str
 		return schema
 	}
 
-	properties := make(map[string]interface{})
+	properties := make(map[string]any)
 	var required []string
 
 	for _, field := range decl.Fields {
@@ -182,7 +183,7 @@ func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[str
 	}
 
 	if len(decl.Interfaces) > 0 {
-		ifaces := make([]interface{}, len(decl.Interfaces))
+		ifaces := make([]any, len(decl.Interfaces))
 		for i, iface := range decl.Interfaces {
 			ifaces[i] = iface
 		}
@@ -194,8 +195,8 @@ func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[str
 }
 
 // buildOwnFieldsSchema builds a schema for just the type's own fields (without inheritance).
-func (idx *Index) buildOwnFieldsSchema(decl *TypeDecl, visited map[string]bool) map[string]interface{} {
-	schema := map[string]interface{}{
+func (idx *Index) buildOwnFieldsSchema(decl *TypeDecl, visited map[string]bool) map[string]any {
+	schema := map[string]any{
 		"type": "object",
 	}
 
@@ -203,7 +204,7 @@ func (idx *Index) buildOwnFieldsSchema(decl *TypeDecl, visited map[string]bool) 
 		return schema
 	}
 
-	properties := make(map[string]interface{})
+	properties := make(map[string]any)
 	var required []string
 
 	// Collect superclass field names to skip duplicates in allOf
@@ -290,83 +291,193 @@ func (idx *Index) buildOwnFieldsSchema(decl *TypeDecl, visited map[string]bool) 
 	return schema
 }
 
-// fieldTypeToSchema converts a Java/TypeScript type string to an OpenAPI schema.
-func (idx *Index) fieldTypeToSchema(typeName string, visited map[string]bool) map[string]interface{} {
+// fieldTypeToSchema converts a Java/TypeScript/Python type string to an OpenAPI schema.
+func (idx *Index) fieldTypeToSchema(typeName string, visited map[string]bool) map[string]any {
 	typeName = strings.TrimSpace(typeName)
 
-	// Handle nullable types (TypeScript: string | null)
+	// Handle nullable types (TypeScript: string | null, Python: str | None)
 	typeName = strings.TrimSuffix(typeName, " | null")
 	typeName = strings.TrimSuffix(typeName, " | undefined")
+	typeName = strings.TrimSuffix(typeName, " | None")
+	typeName = strings.TrimPrefix(typeName, "None | ")
 
-	// Handle Java/TS primitive types
+	// Python: Optional[X] is equivalent to X
+	if strings.HasPrefix(typeName, "Optional[") && strings.HasSuffix(typeName, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(typeName, "Optional["), "]")
+		return idx.fieldTypeToSchema(strings.TrimSpace(inner), visited)
+	}
+
+	// Python: list[X], dict[K, V], tuple[X, Y], set[X] — 3.9+ PEP 585 syntax
+	if strings.HasPrefix(typeName, "list[") && strings.HasSuffix(typeName, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(typeName, "list["), "]")
+		return map[string]any{
+			"type":  "array",
+			"items": idx.fieldTypeToSchema(strings.TrimSpace(inner), visited),
+		}
+	}
+	if strings.HasPrefix(typeName, "List[") && strings.HasSuffix(typeName, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(typeName, "List["), "]")
+		return map[string]any{
+			"type":  "array",
+			"items": idx.fieldTypeToSchema(strings.TrimSpace(inner), visited),
+		}
+	}
+	if strings.HasPrefix(typeName, "set[") && strings.HasSuffix(typeName, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(typeName, "set["), "]")
+		return map[string]any{
+			"type":        "array",
+			"uniqueItems": true,
+			"items":       idx.fieldTypeToSchema(strings.TrimSpace(inner), visited),
+		}
+	}
+	if strings.HasPrefix(typeName, "Set[") && strings.HasSuffix(typeName, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(typeName, "Set["), "]")
+		return map[string]any{
+			"type":        "array",
+			"uniqueItems": true,
+			"items":       idx.fieldTypeToSchema(strings.TrimSpace(inner), visited),
+		}
+	}
+	if strings.HasPrefix(typeName, "dict[") && strings.HasSuffix(typeName, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(typeName, "dict["), "]")
+		parts := splitGenericArgsPython(inner)
+		if len(parts) >= 2 {
+			return map[string]any{
+				"type":                 "object",
+				"additionalProperties": idx.fieldTypeToSchema(parts[1], visited),
+			}
+		}
+		return map[string]any{"type": "object", "additionalProperties": map[string]any{}}
+	}
+	if strings.HasPrefix(typeName, "Dict[") && strings.HasSuffix(typeName, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(typeName, "Dict["), "]")
+		parts := splitGenericArgsPython(inner)
+		if len(parts) >= 2 {
+			return map[string]any{
+				"type":                 "object",
+				"additionalProperties": idx.fieldTypeToSchema(parts[1], visited),
+			}
+		}
+		return map[string]any{"type": "object", "additionalProperties": map[string]any{}}
+	}
+	// Python Union[A, B] and Union[A, None]
+	if strings.HasPrefix(typeName, "Union[") && strings.HasSuffix(typeName, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(typeName, "Union["), "]")
+		parts := splitGenericArgsPython(inner)
+		// Filter out None (Optional sentinel)
+		var nonNone []string
+		for _, p := range parts {
+			if p != "None" {
+				nonNone = append(nonNone, p)
+			}
+		}
+		if len(nonNone) == 1 {
+			return idx.fieldTypeToSchema(nonNone[0], visited)
+		}
+		if len(nonNone) > 1 {
+			variants := make([]any, len(nonNone))
+			for i, p := range nonNone {
+				variants[i] = idx.fieldTypeToSchema(p, visited)
+			}
+			return map[string]any{"oneOf": variants}
+		}
+	}
+	// Python Literal[...] -> enum
+	if strings.HasPrefix(typeName, "Literal[") && strings.HasSuffix(typeName, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(typeName, "Literal["), "]")
+		parts := splitGenericArgsPython(inner)
+		var values []any
+		allStrings := true
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if len(p) >= 2 && (strings.HasPrefix(p, `"`) || strings.HasPrefix(p, "'")) {
+				values = append(values, stripQuotes(p))
+				continue
+			}
+			allStrings = false
+			values = append(values, p)
+		}
+		schema := map[string]any{"enum": values}
+		if allStrings {
+			schema["type"] = "string"
+		}
+		return schema
+	}
+
+	// Handle Java/TS/Python primitive types
 	switch strings.ToLower(typeName) {
-	case "string", "java.lang.string":
-		return map[string]interface{}{"type": "string"}
+	case "string", "java.lang.string", "str":
+		return map[string]any{"type": "string"}
 	case "int", "integer", "java.lang.integer":
-		return map[string]interface{}{"type": "integer", "format": "int32"}
+		return map[string]any{"type": "integer", "format": "int32"}
 	case "long", "java.lang.long":
-		return map[string]interface{}{"type": "integer", "format": "int64"}
+		return map[string]any{"type": "integer", "format": "int64"}
 	case "double", "java.lang.double":
-		return map[string]interface{}{"type": "number", "format": "double"}
+		return map[string]any{"type": "number", "format": "double"}
 	case "float", "java.lang.float":
-		return map[string]interface{}{"type": "number", "format": "float"}
-	case "boolean", "java.lang.boolean":
-		return map[string]interface{}{"type": "boolean"}
+		return map[string]any{"type": "number", "format": "float"}
+	case "boolean", "java.lang.boolean", "bool":
+		return map[string]any{"type": "boolean"}
 	case "number": // TypeScript number
-		return map[string]interface{}{"type": "number"}
-	case "void":
-		return map[string]interface{}{}
+		return map[string]any{"type": "number"}
+	case "void", "none":
+		return map[string]any{}
 	case "date", "localdate", "java.time.localdate":
-		return map[string]interface{}{"type": "string", "format": "date"}
+		return map[string]any{"type": "string", "format": "date"}
+	case "datetime", "datetime.datetime":
+		return map[string]any{"type": "string", "format": "date-time"}
+	case "time", "datetime.time":
+		return map[string]any{"type": "string", "format": "time"}
+	case "datetime.date":
+		return map[string]any{"type": "string", "format": "date"}
 	case "localdatetime", "offsetdatetime", "zoneddatetime", "instant",
 		"java.time.localdatetime", "java.time.offsetdatetime",
 		"java.time.zoneddatetime", "java.time.instant":
-		return map[string]interface{}{"type": "string", "format": "date-time"}
-	case "uuid", "java.util.uuid":
-		return map[string]interface{}{"type": "string", "format": "uuid"}
-	case "bigdecimal", "java.math.bigdecimal":
-		return map[string]interface{}{"type": "string", "format": "decimal"}
+		return map[string]any{"type": "string", "format": "date-time"}
+	case "uuid", "java.util.uuid", "uuid.uuid":
+		return map[string]any{"type": "string", "format": "uuid"}
+	case "bigdecimal", "java.math.bigdecimal", "decimal", "decimal.decimal":
+		return map[string]any{"type": "string", "format": "decimal"}
 	case "short", "java.lang.short":
-		return map[string]interface{}{"type": "integer", "format": "int32"}
-	case "byte[]":
-		return map[string]interface{}{"type": "string", "format": "byte"}
+		return map[string]any{"type": "integer", "format": "int32"}
+	case "byte[]", "bytes":
+		return map[string]any{"type": "string", "format": "byte"}
 	case "byte", "java.lang.byte":
-		return map[string]interface{}{"type": "integer", "format": "int32"}
-	case "object", "any", "jsonnode":
-		return map[string]interface{}{}
+		return map[string]any{"type": "integer", "format": "int32"}
+	case "object", "any", "jsonnode", "typing.any":
+		return map[string]any{}
 	}
 
 	// Handle Java wildcard types (?, ? extends T, ? super T)
 	if typeName == "?" {
-		return map[string]interface{}{"type": "object"}
+		return map[string]any{"type": "object"}
 	}
-	if strings.HasPrefix(typeName, "? extends ") {
-		inner := strings.TrimPrefix(typeName, "? extends ")
+	if inner, ok := strings.CutPrefix(typeName, "? extends "); ok {
 		return idx.fieldTypeToSchema(strings.TrimSpace(inner), visited)
 	}
-	if strings.HasPrefix(typeName, "? super ") {
-		inner := strings.TrimPrefix(typeName, "? super ")
+	if inner, ok := strings.CutPrefix(typeName, "? super "); ok {
+
 		return idx.fieldTypeToSchema(strings.TrimSpace(inner), visited)
 	}
 
 	// Handle Page<T> wrapper type
 	if strings.HasPrefix(typeName, "Page<") {
 		inner := extractGenericInner(typeName)
-		return map[string]interface{}{
+		return map[string]any{
 			"type": "object",
-			"properties": map[string]interface{}{
-				"content": map[string]interface{}{
+			"properties": map[string]any{
+				"content": map[string]any{
 					"type":  "array",
 					"items": idx.fieldTypeToSchema(inner, visited),
 				},
-				"totalElements":    map[string]interface{}{"type": "integer", "format": "int64"},
-				"totalPages":       map[string]interface{}{"type": "integer", "format": "int32"},
-				"number":           map[string]interface{}{"type": "integer", "format": "int32"},
-				"size":             map[string]interface{}{"type": "integer", "format": "int32"},
-				"numberOfElements": map[string]interface{}{"type": "integer", "format": "int32"},
-				"first":            map[string]interface{}{"type": "boolean"},
-				"last":             map[string]interface{}{"type": "boolean"},
-				"empty":            map[string]interface{}{"type": "boolean"},
+				"totalElements":    map[string]any{"type": "integer", "format": "int64"},
+				"totalPages":       map[string]any{"type": "integer", "format": "int32"},
+				"number":           map[string]any{"type": "integer", "format": "int32"},
+				"size":             map[string]any{"type": "integer", "format": "int32"},
+				"numberOfElements": map[string]any{"type": "integer", "format": "int32"},
+				"first":            map[string]any{"type": "boolean"},
+				"last":             map[string]any{"type": "boolean"},
+				"empty":            map[string]any{"type": "boolean"},
 			},
 		}
 	}
@@ -376,7 +487,7 @@ func (idx *Index) fieldTypeToSchema(typeName string, visited map[string]bool) ma
 		strings.HasPrefix(typeName, "Collection<") || strings.HasPrefix(typeName, "HashSet<") ||
 		strings.HasPrefix(typeName, "TreeSet<") {
 		inner := extractGenericInner(typeName)
-		schema := map[string]interface{}{
+		schema := map[string]any{
 			"type":  "array",
 			"items": idx.fieldTypeToSchema(inner, visited),
 		}
@@ -390,14 +501,14 @@ func (idx *Index) fieldTypeToSchema(typeName string, visited map[string]bool) ma
 	// Handle TypeScript array syntax: Type[] or Array<Type>
 	if strings.HasSuffix(typeName, "[]") {
 		inner := strings.TrimSuffix(typeName, "[]")
-		return map[string]interface{}{
+		return map[string]any{
 			"type":  "array",
 			"items": idx.fieldTypeToSchema(inner, visited),
 		}
 	}
 	if strings.HasPrefix(typeName, "Array<") {
 		inner := extractGenericInner(typeName)
-		return map[string]interface{}{
+		return map[string]any{
 			"type":  "array",
 			"items": idx.fieldTypeToSchema(inner, visited),
 		}
@@ -408,22 +519,22 @@ func (idx *Index) fieldTypeToSchema(typeName string, visited map[string]bool) ma
 		// Map<K,V> -> object with additionalProperties
 		parts := splitGenericArgs(extractGenericInner(typeName))
 		if len(parts) >= 2 {
-			return map[string]interface{}{
+			return map[string]any{
 				"type":                 "object",
 				"additionalProperties": idx.fieldTypeToSchema(parts[1], visited),
 			}
 		}
-		return map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{}}
+		return map[string]any{"type": "object", "additionalProperties": map[string]any{}}
 	}
 	if strings.HasPrefix(typeName, "Record<") {
 		parts := splitGenericArgs(extractGenericInner(typeName))
 		if len(parts) >= 2 {
-			return map[string]interface{}{
+			return map[string]any{
 				"type":                 "object",
 				"additionalProperties": idx.fieldTypeToSchema(parts[1], visited),
 			}
 		}
-		return map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{}}
+		return map[string]any{"type": "object", "additionalProperties": map[string]any{}}
 	}
 
 	// Handle Optional/Nullable
@@ -442,11 +553,11 @@ func (idx *Index) fieldTypeToSchema(typeName string, visited map[string]bool) ma
 	}
 
 	// Unknown type - return a $ref placeholder
-	return map[string]interface{}{"$ref": "#/components/schemas/" + typeName}
+	return map[string]any{"$ref": "#/components/schemas/" + typeName}
 }
 
 // Resolver resolves a type reference to an OpenAPI schema. Convenience wrapper.
-func (idx *Index) Resolver(ref string) (map[string]interface{}, bool) {
+func (idx *Index) Resolver(ref string) (map[string]any, bool) {
 	decl, ok := idx.Resolve(ref)
 	if !ok {
 		return nil, false
@@ -485,7 +596,7 @@ func isJsonUnwrapped(field FieldDecl) bool {
 
 // inlineUnwrappedFields resolves the given type and copies its properties
 // into the parent properties map. This implements @JsonUnwrapped behavior.
-func (idx *Index) inlineUnwrappedFields(typeName string, visited map[string]bool, properties map[string]interface{}, required *[]string) {
+func (idx *Index) inlineUnwrappedFields(typeName string, visited map[string]bool, properties map[string]any, required *[]string) {
 	typeName = strings.TrimSpace(typeName)
 	// Try to resolve to a known type
 	var decl *TypeDecl
@@ -499,10 +610,8 @@ func (idx *Index) inlineUnwrappedFields(typeName string, visited map[string]bool
 	}
 	// Build the nested schema and inline its properties
 	nestedSchema := idx.ToOpenAPISchema(decl, visited)
-	if nestedProps, ok := nestedSchema["properties"].(map[string]interface{}); ok {
-		for k, v := range nestedProps {
-			properties[k] = v
-		}
+	if nestedProps, ok := nestedSchema["properties"].(map[string]any); ok {
+		maps.Copy(properties, nestedProps)
 	}
 	if nestedReq, ok := nestedSchema["required"].([]string); ok {
 		*required = append(*required, nestedReq...)
@@ -510,7 +619,7 @@ func (idx *Index) inlineUnwrappedFields(typeName string, visited map[string]bool
 }
 
 // applyJavaValidation applies Java/TS validation constraint annotations to a schema.
-func applyJavaValidation(annotations map[string]string, schema map[string]interface{}) {
+func applyJavaValidation(annotations map[string]string, schema map[string]any) {
 	if annotations == nil {
 		return
 	}
@@ -654,8 +763,8 @@ func applyJavaValidation(annotations map[string]string, schema map[string]interf
 				if av := extractNamedValue(value, "allowableValues"); av != "" {
 					av = strings.TrimPrefix(av, "{")
 					av = strings.TrimSuffix(av, "}")
-					var vals []interface{}
-					for _, v := range strings.Split(av, ",") {
+					var vals []any
+					for v := range strings.SplitSeq(av, ",") {
 						v = strings.TrimSpace(v)
 						v = stripQuotes(v)
 						if v != "" {
@@ -755,7 +864,7 @@ func applyJavaValidation(annotations map[string]string, schema map[string]interf
 	}
 }
 
-func applySizeConstraint(args string, schema map[string]interface{}, isArray bool) {
+func applySizeConstraint(args string, schema map[string]any, isArray bool) {
 	args = strings.TrimPrefix(args, "(")
 	args = strings.TrimSuffix(args, ")")
 	for _, part := range strings.Split(args, ",") {
@@ -898,6 +1007,29 @@ func splitGenericArgs(args string) []string {
 		case '<':
 			depth++
 		case '>':
+			depth--
+		case ',':
+			if depth == 0 {
+				result = append(result, strings.TrimSpace(args[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	result = append(result, strings.TrimSpace(args[start:]))
+	return result
+}
+
+// splitGenericArgsPython splits "A, B" respecting Python bracket-style nested
+// generics like `dict[str, list[int]]`.
+func splitGenericArgsPython(args string) []string {
+	var result []string
+	depth := 0
+	start := 0
+	for i, c := range args {
+		switch c {
+		case '[', '(':
+			depth++
+		case ']', ')':
 			depth--
 		case ',':
 			if depth == 0 {

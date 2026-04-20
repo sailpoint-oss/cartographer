@@ -90,6 +90,15 @@ func DetectLanguage(root string) (lang string, template string) {
 	if fileExists(pkgJSON) && hasNestJSDependency(pkgJSON) {
 		return "typescript", "saas-atlasjs"
 	}
+	// Python is the final fallback: pyproject.toml is the strongest signal,
+	// setup.py / Pipfile / requirements.txt cover legacy and minimal projects.
+	if fileExists(filepath.Join(root, "pyproject.toml")) ||
+		fileExists(filepath.Join(root, "setup.py")) ||
+		fileExists(filepath.Join(root, "setup.cfg")) ||
+		fileExists(filepath.Join(root, "Pipfile")) ||
+		fileExists(filepath.Join(root, "requirements.txt")) {
+		return "python", "atlas-python"
+	}
 	return "", ""
 }
 

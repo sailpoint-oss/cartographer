@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2025. Sailpoint Technologies, Inc. All rights reserved.
+// Copyright (c) 2020-2026. Sailpoint Technologies, Inc. All rights reserved.
 
 package goextract
 
@@ -564,8 +564,8 @@ func (e *Extractor) extractFieldInfo(name *ast.Ident, field *ast.Field, info *ty
 
 // cachedHandlerInfo stores handler information before routes are matched.
 type cachedHandlerInfo struct {
-	info     *HandlerInfo
-	comments map[string]string
+	info           *HandlerInfo
+	comments       map[string]string
 	sourceLocation string
 }
 

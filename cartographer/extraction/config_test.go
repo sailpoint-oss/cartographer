@@ -200,6 +200,39 @@ func TestDetectLanguage_Unknown(t *testing.T) {
 	}
 }
 
+func TestDetectLanguage_Python(t *testing.T) {
+	// Each file on its own should be enough to identify a Python project.
+	for _, name := range []string{"pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "requirements.txt"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(""), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			lang, tmpl := DetectLanguage(dir)
+			if lang != "python" || tmpl != "atlas-python" {
+				t.Errorf("[%s] lang=%v, template=%v", name, lang, tmpl)
+			}
+		})
+	}
+}
+
+// TestDetectLanguage_GoBeatsPython guards the precedence rule: a repo that
+// has both a go.mod and a stray requirements.txt (e.g. tooling scripts)
+// should still be treated as Go because that is what the codebase is.
+func TestDetectLanguage_GoBeatsPython(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lang, tmpl := DetectLanguage(dir)
+	if lang != "go" || tmpl != "atlas-go" {
+		t.Errorf("expected go to win, got lang=%v, template=%v", lang, tmpl)
+	}
+}
+
 func TestGenerateInitYAML(t *testing.T) {
 	output := GenerateInitYAML("Test Service", "go", "atlas-go", " (auto-detected: go)")
 

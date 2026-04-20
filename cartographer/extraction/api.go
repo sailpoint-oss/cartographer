@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/sailpoint-oss/cartographer/extract/goextract"
 	"github.com/sailpoint-oss/cartographer/extract/javaextract"
+	"github.com/sailpoint-oss/cartographer/extract/pythonextract"
 	"github.com/sailpoint-oss/cartographer/extract/specgen"
 	"github.com/sailpoint-oss/cartographer/extract/tsextract"
 )
@@ -45,8 +47,10 @@ func Extract(opts Options) (*Result, error) {
 		return doJavaExtract(opts)
 	case "typescript", "ts":
 		return doTypeScriptExtract(opts)
+	case "python", "py":
+		return doPythonExtract(opts)
 	default:
-		return nil, fmt.Errorf("unsupported language: %s (supported: go, java, typescript)", opts.Lang)
+		return nil, fmt.Errorf("unsupported language: %s (supported: go, java, typescript, python)", opts.Lang)
 	}
 }
 
@@ -59,6 +63,8 @@ func InferTemplate(lang string) string {
 		return "atlas-boot"
 	case "typescript", "ts":
 		return "saas-atlasjs"
+	case "python", "py":
+		return "atlas-python"
 	default:
 		return ""
 	}
@@ -93,6 +99,54 @@ func FindTypeScriptSourceDirs(root string) []string {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			found = append(found, dir)
 			break
+		}
+	}
+	return found
+}
+
+// FindPythonSourceDirs finds conventional Python source directories.
+//
+// Atlas-python services generally follow one of these layouts:
+//
+//   - src-layout              (pyproject.toml + src/<pkg>/)
+//   - flat layout             (pyproject.toml + <pkg>/)
+//   - app-style               (app.py in root, modules alongside)
+//
+// We pick the first that exists; if none match we fall back to the project
+// root, which the walker will then recursively scan.
+func FindPythonSourceDirs(root string) []string {
+	candidates := []string{
+		filepath.Join(root, "src"),
+		filepath.Join(root, "app"),
+		filepath.Join(root, "server"),
+	}
+	var found []string
+	for _, dir := range candidates {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			found = append(found, dir)
+			break
+		}
+	}
+	if len(found) == 0 {
+		// Look for a top-level package directory (one with __init__.py) inside
+		// the root. This handles flat-layout services like
+		//   <root>/<pkg>/__init__.py
+		entries, err := os.ReadDir(root)
+		if err == nil {
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				if name == "tests" || name == "test" || name == "docs" || strings.HasPrefix(name, ".") {
+					continue
+				}
+				init := filepath.Join(root, name, "__init__.py")
+				if _, err := os.Stat(init); err == nil {
+					found = append(found, filepath.Join(root, name))
+					break
+				}
+			}
 		}
 	}
 	return found
@@ -186,6 +240,37 @@ func doTypeScriptExtract(opts Options) (*Result, error) {
 	}
 
 	specMap := tsextract.GenerateSpec(result, tsextract.SpecConfig{
+		Title:           opts.Title,
+		Version:         opts.Version,
+		Description:     opts.Description,
+		OpenAPIVersion:  "3.2",
+		ServiceTemplate: opts.Template,
+		TreeShake:       true,
+	})
+
+	return &Result{
+		SpecMap:    specMap,
+		Operations: len(result.Operations),
+		Types:      len(result.Types),
+	}, nil
+}
+
+func doPythonExtract(opts Options) (*Result, error) {
+	sourceDirs := FindPythonSourceDirs(opts.RootDir)
+	if len(sourceDirs) == 0 {
+		sourceDirs = []string{opts.RootDir}
+	}
+
+	result, err := pythonextract.Extract(pythonextract.Config{
+		RootDir:    opts.RootDir,
+		SourceDirs: sourceDirs,
+		Verbose:    opts.Verbose,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("python extraction: %w", err)
+	}
+
+	specMap := pythonextract.GenerateSpec(result, pythonextract.SpecConfig{
 		Title:           opts.Title,
 		Version:         opts.Version,
 		Description:     opts.Description,

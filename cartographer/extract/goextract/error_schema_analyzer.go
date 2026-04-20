@@ -103,9 +103,10 @@ func (esa *ErrorSchemaAnalyzer) analyzeNewErrorFunction(funcDecl *ast.FuncDecl, 
 					value := esa.extractValue(rhs, info)
 					if value != nil {
 						// Determine which struct this belongs to
-						if varName == "message" {
+						switch varName {
+						case "message":
 							messageSchema.ConstantFields[jsonFieldName(fieldName)] = value
-						} else if varName == "e" {
+						case "e":
 							// Check if it's a constant value or a dynamic one
 							if isConstantValue(rhs, info) {
 								schema.ConstantFields[jsonFieldName(fieldName)] = value
