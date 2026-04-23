@@ -221,11 +221,17 @@ func extractFileOperations(root *tree_sitter.Node, source []byte, filePath strin
 	// Detect framework by top-level imports
 	framework = detectFramework(root, source)
 
+	// First pass: collect any FastAPI APIRouter(prefix=...) or Flask
+	// Blueprint(..., url_prefix=...) declarations so routes defined against
+	// those routers inherit the prefix. Also capture any additional prefix
+	// applied via `app.include_router(router, prefix="/v1")`.
+	prefixes := collectRouterPrefixes(root, source)
+
 	for i := uint(0); i < root.ChildCount(); i++ {
 		child := root.Child(i)
 		switch child.Kind() {
 		case "decorated_definition":
-			if op, f := extractDecoratedRoute(child, source, filePath, idx); op != nil {
+			if op, f := extractDecoratedRoute(child, source, filePath, idx, prefixes); op != nil {
 				ops = append(ops, op)
 				if f != "" {
 					framework = mergeFramework(framework, f)
@@ -263,6 +269,198 @@ func extractFileOperations(root *tree_sitter.Node, source []byte, filePath strin
 	return ops, framework
 }
 
+// collectRouterPrefixes walks a module for FastAPI APIRouter and Flask Blueprint
+// declarations, returning a map of local variable name → path prefix. It also
+// detects `app.include_router(router, prefix="/v1")` calls and combines the
+// include prefix with the router's own prefix so the final effective prefix is
+// stored under the router variable name.
+//
+// Example resolutions:
+//
+//	router = APIRouter(prefix="/v3/users")       -> "router" -> "/v3/users"
+//	app.include_router(router, prefix="/api")    -> "router" -> "/api/v3/users"
+//	bp = Blueprint("users", __name__, url_prefix="/v3/users")
+//	                                              -> "bp"     -> "/v3/users"
+func collectRouterPrefixes(root *tree_sitter.Node, source []byte) map[string]string {
+	prefixes := make(map[string]string)
+
+	// Pass 1: pick up direct router/blueprint construction prefixes.
+	for i := uint(0); i < root.ChildCount(); i++ {
+		child := root.Child(i)
+		if child.Kind() != "expression_statement" {
+			continue
+		}
+		for j := uint(0); j < child.ChildCount(); j++ {
+			inner := child.Child(j)
+			if inner.Kind() != "assignment" {
+				continue
+			}
+			name, prefix, ok := extractRouterAssignment(inner, source)
+			if !ok {
+				continue
+			}
+			prefixes[name] = normalisePath(prefix)
+		}
+	}
+
+	// Pass 2: apply include_router prefixes. We combine them with any existing
+	// router prefix: include prefix comes first, then the router's own prefix.
+	for i := uint(0); i < root.ChildCount(); i++ {
+		child := root.Child(i)
+		if child.Kind() != "expression_statement" {
+			continue
+		}
+		for j := uint(0); j < child.ChildCount(); j++ {
+			inner := child.Child(j)
+			if inner.Kind() != "call" {
+				continue
+			}
+			name, prefix, ok := extractIncludeRouterCall(inner, source)
+			if !ok {
+				continue
+			}
+			existing := prefixes[name]
+			combined := joinURLPath(normalisePath(prefix), existing)
+			if combined != "" {
+				prefixes[name] = combined
+			}
+		}
+	}
+
+	return prefixes
+}
+
+// extractRouterAssignment matches `name = APIRouter(prefix="...")` and
+// `name = Blueprint("x", __name__, url_prefix="...")`.
+func extractRouterAssignment(assign *tree_sitter.Node, source []byte) (string, string, bool) {
+	left := assign.ChildByFieldName("left")
+	right := assign.ChildByFieldName("right")
+	if left == nil || right == nil || right.Kind() != "call" {
+		return "", "", false
+	}
+	lhs := strings.TrimSpace(left.Utf8Text(source))
+	if !isSimpleIdentifier(lhs) {
+		return "", "", false
+	}
+
+	fn := right.ChildByFieldName("function")
+	args := right.ChildByFieldName("arguments")
+	if fn == nil || args == nil {
+		return "", "", false
+	}
+	fnName := strings.TrimSpace(fn.Utf8Text(source))
+	// Accept bare identifier or dotted import: APIRouter / fastapi.APIRouter /
+	// APIRouter as r -> we only see the final name via tree-sitter.
+	if idx := strings.LastIndex(fnName, "."); idx >= 0 {
+		fnName = fnName[idx+1:]
+	}
+
+	kwargKey := ""
+	switch fnName {
+	case "APIRouter":
+		kwargKey = "prefix"
+	case "Blueprint":
+		kwargKey = "url_prefix"
+	default:
+		return "", "", false
+	}
+
+	prefix, ok := extractKeywordString(args, source, kwargKey)
+	if !ok {
+		return "", "", false
+	}
+	return lhs, prefix, true
+}
+
+// extractIncludeRouterCall matches `app.include_router(router, prefix="...")`
+// and returns the router variable name and the include prefix.
+func extractIncludeRouterCall(call *tree_sitter.Node, source []byte) (string, string, bool) {
+	fn := call.ChildByFieldName("function")
+	args := call.ChildByFieldName("arguments")
+	if fn == nil || args == nil {
+		return "", "", false
+	}
+	fnText := strings.TrimSpace(fn.Utf8Text(source))
+	methodName := fnText
+	if idx := strings.LastIndex(fnText, "."); idx >= 0 {
+		methodName = fnText[idx+1:]
+	}
+	if methodName != "include_router" {
+		return "", "", false
+	}
+
+	routerName := ""
+	for i := uint(0); i < args.ChildCount(); i++ {
+		arg := args.Child(i)
+		if arg.Kind() == "identifier" {
+			routerName = arg.Utf8Text(source)
+			break
+		}
+	}
+	if routerName == "" {
+		return "", "", false
+	}
+	prefix, ok := extractKeywordString(args, source, "prefix")
+	if !ok {
+		// include_router without a prefix is valid, but it's only interesting
+		// to us when a prefix is supplied — without one the router's own
+		// prefix is already covered by collectRouterPrefixes pass 1.
+		return "", "", false
+	}
+	return routerName, prefix, true
+}
+
+// extractKeywordString returns the string-literal value of the named keyword
+// argument, stripped of quotes, if present.
+func extractKeywordString(argList *tree_sitter.Node, source []byte, name string) (string, bool) {
+	for i := uint(0); i < argList.ChildCount(); i++ {
+		arg := argList.Child(i)
+		if arg.Kind() != "keyword_argument" {
+			continue
+		}
+		k := arg.ChildByFieldName("name")
+		v := arg.ChildByFieldName("value")
+		if k == nil || v == nil {
+			continue
+		}
+		if k.Utf8Text(source) != name {
+			continue
+		}
+		val := strings.TrimSpace(v.Utf8Text(source))
+		if val == "" {
+			continue
+		}
+		return trimQuotes(val), true
+	}
+	return "", false
+}
+
+func isSimpleIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// joinURLPath joins two URL path segments with a single slash. A trailing "/"
+// on the second segment is treated as an empty suffix so the common FastAPI
+// pattern `@router.get("/")` resolves to the router's prefix instead of
+// "/prefix/".
+func joinURLPath(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" || b == "/" {
+		return a
+	}
+	return strings.TrimRight(a, "/") + "/" + strings.TrimLeft(b, "/")
+}
+
 // detectFramework looks at the module imports to identify the web framework.
 func detectFramework(root *tree_sitter.Node, source []byte) string {
 	framework := ""
@@ -295,7 +493,11 @@ func detectFramework(root *tree_sitter.Node, source []byte) string {
 //	@app.route("/legacy", methods=["GET", "POST"])       # Flask / Starlette
 //	@router.api_route("/proxy", methods=["GET", "POST"]) # FastAPI
 //	@blueprint.delete("/users/{id}")                     # FastAPI/Starlette
-func extractDecoratedRoute(node *tree_sitter.Node, source []byte, filePath string, idx *index.Index) (*Operation, string) {
+//
+// prefixes maps router/blueprint variable names to a path prefix (e.g.
+// "router" -> "/v3/users"). When the decorator's receiver matches a key, the
+// prefix is prepended to the path parsed from the decorator.
+func extractDecoratedRoute(node *tree_sitter.Node, source []byte, filePath string, idx *index.Index, prefixes map[string]string) (*Operation, string) {
 	var routeDecorators []routeDecorator
 	var funcDef *tree_sitter.Node
 
@@ -304,6 +506,9 @@ func extractDecoratedRoute(node *tree_sitter.Node, source []byte, filePath strin
 		switch child.Kind() {
 		case "decorator":
 			if rd, ok := parseRouteDecorator(child, source); ok {
+				if prefix, known := prefixes[rd.Receiver]; known && prefix != "" {
+					rd.Path = joinURLPath(prefix, rd.Path)
+				}
 				routeDecorators = append(routeDecorators, rd)
 			}
 		case "function_definition":
@@ -333,6 +538,9 @@ type routeDecorator struct {
 	StatusCode  int
 	Deprecated  bool
 	Framework   string
+	// Receiver is the variable name before the dot in the decorator target
+	// (e.g. "router" in @router.get("/items")). Empty for bare decorators.
+	Receiver string
 }
 
 // parseRouteDecorator attempts to interpret the decorator as a route decl.
@@ -366,9 +574,11 @@ func parseRouteDecorator(decorator *tree_sitter.Node, source []byte) (routeDecor
 	}
 
 	fnText := fn.Utf8Text(source)
-	// strip receiver prefix, keep the method name
+	// strip receiver prefix, keep the method name; also remember the receiver
+	// so the caller can look up any APIRouter/Blueprint prefix.
 	methodName := fnText
 	if idx := strings.LastIndex(fnText, "."); idx >= 0 {
+		rd.Receiver = fnText[:idx]
 		methodName = fnText[idx+1:]
 	}
 

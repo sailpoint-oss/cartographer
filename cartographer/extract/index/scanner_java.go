@@ -432,15 +432,27 @@ func extractJavaFields(classBody *tree_sitter.Node, source []byte) []FieldDecl {
 			continue
 		}
 
-		// Extract @Schema description if present
+		// Precedence for a field's human description:
+		//   1) @Schema(description = "...")         (Swagger/OpenAPI 3)
+		//   2) @JsonPropertyDescription("...")      (Jackson — used widely by
+		//      service teams that don't depend on Swagger annotations)
+		//   3) Javadoc immediately preceding the field
+		fieldExample := ""
 		if schemaArgs, ok := annotations["Schema"]; ok && schemaArgs != "" {
-			desc := extractSchemaDescription(schemaArgs)
-			if desc != "" {
+			if desc := extractSchemaDescription(schemaArgs); desc != "" {
 				fieldDescription = desc
 			}
+			if ex := extractSchemaExample(schemaArgs); ex != "" {
+				fieldExample = ex
+			}
 		}
-
-		// Extract field-level JavaDoc from preceding comment sibling
+		if fieldDescription == "" {
+			if jpd, ok := annotations["JsonPropertyDescription"]; ok && jpd != "" {
+				if desc := extractAnnotationStringValue(jpd); desc != "" {
+					fieldDescription = desc
+				}
+			}
+		}
 		if fieldDescription == "" {
 			fieldDescription = extractFieldJavaDoc(classBody, i, source)
 		}
@@ -450,6 +462,7 @@ func extractJavaFields(classBody *tree_sitter.Node, source []byte) []FieldDecl {
 			Name:        fieldName,
 			Type:        fieldType,
 			Description: fieldDescription,
+			Example:     fieldExample,
 			Annotations: annotations,
 			Line:        int(fieldPos.Row) + 1,
 			Column:      int(fieldPos.Column) + 1,
@@ -496,18 +509,34 @@ func extractJavaFields(classBody *tree_sitter.Node, source []byte) []FieldDecl {
 
 // extractSchemaDescription extracts the description from @Schema annotation args.
 func extractSchemaDescription(args string) string {
+	return extractSchemaStringValue(args, "description")
+}
+
+// extractSchemaExample extracts the example from @Schema annotation args.
+// Handles `example = "foo"` and simple unquoted numeric/boolean examples.
+func extractSchemaExample(args string) string {
+	return extractSchemaStringValue(args, "example")
+}
+
+// extractSchemaStringValue extracts a named string-valued parameter from the
+// @Schema annotation argument list.
+func extractSchemaStringValue(args, name string) string {
 	args = strings.TrimPrefix(args, "(")
 	args = strings.TrimSuffix(args, ")")
 	for _, part := range strings.Split(args, ",") {
 		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "description") {
-			if idx := strings.Index(part, "="); idx >= 0 {
-				val := strings.TrimSpace(part[idx+1:])
-				if len(val) >= 2 && strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"") {
-					return val[1 : len(val)-1]
-				}
-			}
+		if !strings.HasPrefix(part, name) {
+			continue
 		}
+		rest := strings.TrimSpace(strings.TrimPrefix(part, name))
+		if !strings.HasPrefix(rest, "=") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(rest, "="))
+		if len(val) >= 2 && strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"") {
+			return val[1 : len(val)-1]
+		}
+		return val
 	}
 	return ""
 }

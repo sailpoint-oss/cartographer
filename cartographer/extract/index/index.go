@@ -35,7 +35,8 @@ type FieldDecl struct {
 	Name         string            // field name
 	Type         string            // type string (e.g. "String", "List<User>")
 	JSONName     string            // JSON serialization name (from @JsonProperty or convention)
-	Description  string            // from JavaDoc/comment
+	Description  string            // from JavaDoc, @Schema(description), @JsonPropertyDescription, Pydantic Field(description=...)
+	Example      string            // from @Schema(example=...), Pydantic Field(example=... | examples=[...])
 	Required     bool              // from @NotNull, @NonNull, etc.
 	Nullable     bool              // from @Nullable annotation
 	Deprecated   bool              // from @Deprecated annotation

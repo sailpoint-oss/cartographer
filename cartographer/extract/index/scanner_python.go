@@ -273,7 +273,8 @@ func parsePythonFieldAssignment(node *tree_sitter.Node, source []byte) FieldDecl
 		text := right.Utf8Text(source)
 		fd.DefaultValue = strings.TrimSpace(text)
 
-		// Field(..., description="foo", deprecated=True, alias="Foo") — extract interesting kwargs
+		// Field(..., description="foo", example="bar", examples=["bar"],
+		//       deprecated=True, alias="Foo") — extract interesting kwargs.
 		if isPydanticFieldCall(right, source) {
 			props := extractPydanticFieldKwargs(right, source)
 			if desc := props["description"]; desc != "" {
@@ -281,6 +282,13 @@ func parsePythonFieldAssignment(node *tree_sitter.Node, source []byte) FieldDecl
 			}
 			if alias := props["alias"]; alias != "" {
 				fd.JSONName = alias
+			}
+			if ex := props["example"]; ex != "" {
+				fd.Example = ex
+			}
+			if ex := props["examples"]; ex != "" {
+				// examples=["foo", "bar"] → first example only, trimmed of brackets/quotes
+				fd.Example = firstListElement(ex)
 			}
 			if props["deprecated"] == "True" || props["deprecated"] == "true" {
 				fd.Deprecated = true
@@ -355,6 +363,25 @@ func extractPydanticFieldKwargs(call *tree_sitter.Node, source []byte) map[strin
 		}
 	}
 	return out
+}
+
+// firstListElement returns the first value of a Python list literal string.
+// Given `["a", "b"]` or `('a', 'b')` or `[42, 43]` it returns "a" or "42".
+// Empty or unrecognised inputs return "".
+func firstListElement(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Strip outer brackets/parens if present.
+	if (strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]")) ||
+		(strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")")) {
+		s = s[1 : len(s)-1]
+	}
+	if idx := strings.Index(s, ","); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.Trim(strings.TrimSpace(s), `"'`)
 }
 
 func extractPythonEnumValues(body *tree_sitter.Node, source []byte) []string {

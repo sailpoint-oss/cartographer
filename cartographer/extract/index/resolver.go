@@ -139,6 +139,9 @@ func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[str
 		if field.Description != "" {
 			fieldSchema["description"] = field.Description
 		}
+		if field.Example != "" {
+			fieldSchema["example"] = field.Example
+		}
 		if field.DefaultValue != "" {
 			fieldSchema["default"] = field.DefaultValue
 		}
@@ -252,6 +255,9 @@ func (idx *Index) buildOwnFieldsSchema(decl *TypeDecl, visited map[string]bool) 
 
 		if field.Description != "" {
 			fieldSchema["description"] = field.Description
+		}
+		if field.Example != "" {
+			fieldSchema["example"] = field.Example
 		}
 		if field.DefaultValue != "" {
 			fieldSchema["default"] = field.DefaultValue

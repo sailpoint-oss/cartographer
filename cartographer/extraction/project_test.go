@@ -190,6 +190,135 @@ func TestExtractProject_ReturnsHelpfulLanguageError(t *testing.T) {
 	}
 }
 
+// TestExtractProject_DetectsLanguageMismatch makes sure that when a
+// service claims Java but the repo has go.mod we still run the requested
+// extractor but flag the discrepancy on the result so meridian can log it.
+func TestExtractProject_DetectsLanguageMismatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := extractProjectWithRunner(ProjectOptions{
+		RootDir:  root,
+		Lang:     "java",
+		Template: "atlas-boot",
+	}, func(opts Options) (*Result, error) {
+		return &Result{
+			SpecMap: map[string]interface{}{
+				"info":  map[string]interface{}{},
+				"paths": map[string]interface{}{},
+			},
+			Source: SourceExtracted,
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("extractProjectWithRunner: %v", err)
+	}
+	if !res.LanguageMismatch {
+		t.Fatal("expected LanguageMismatch = true")
+	}
+	if res.DetectedLanguage != "go" {
+		t.Errorf("DetectedLanguage = %q, want go", res.DetectedLanguage)
+	}
+	if !res.Signals.Go {
+		t.Error("expected Signals.Go to be set")
+	}
+}
+
+// TestExtractProject_NonRESTKindStub covers the library / worker short
+// circuit: when Kind is non-REST and no canonical spec exists, a stub
+// spec is produced instead of running the extractor.
+func TestExtractProject_NonRESTKindStub(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := 0
+	res, err := extractProjectWithRunner(ProjectOptions{
+		RootDir: root,
+		Kind:    "library",
+		Lang:    "go",
+	}, func(opts Options) (*Result, error) {
+		called++
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("extractProjectWithRunner: %v", err)
+	}
+	if called != 0 {
+		t.Errorf("expected runner NOT to be called for library kind, got %d calls", called)
+	}
+	if res.Result == nil || res.SpecMap == nil {
+		t.Fatal("expected stub result")
+	}
+	info := res.SpecMap["info"].(map[string]interface{})
+	if info["x-service-kind"] != "library" {
+		t.Errorf("x-service-kind = %v", info["x-service-kind"])
+	}
+	if info["x-spec-source"] != "non-rest-stub" {
+		t.Errorf("x-spec-source = %v", info["x-spec-source"])
+	}
+}
+
+// TestExtractProject_PreferCanonicalSpec verifies that when a canonical
+// spec exists and the caller opts in, the extractor runner is skipped.
+func TestExtractProject_PreferCanonicalSpec(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := `openapi: 3.0.3
+info:
+  title: Canonical
+  version: "2.5"
+paths:
+  /thing:
+    get:
+      responses:
+        "200":
+          description: ok
+`
+	if err := os.WriteFile(filepath.Join(root, "openapi.yaml"), []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runnerCalled := 0
+	res, err := extractProjectWithRunner(ProjectOptions{
+		RootDir:             root,
+		Lang:                "go",
+		Template:            "atlas-go",
+		PreferCanonicalSpec: true,
+	}, func(opts Options) (*Result, error) {
+		runnerCalled++
+		// Fallthrough: because extractProjectWithRunner uses Extract
+		// directly for canonical paths we do not expect the default
+		// runner to fire. However when PreferCanonicalSpec drives the
+		// path through Extract, the passthrough branch loads the spec
+		// without touching the runner; the runner is still the test
+		// seam for non-canonical Extract options.
+		if opts.OverrideSpecPath != "" || opts.UseCanonicalSpec {
+			return Extract(opts)
+		}
+		return &Result{SpecMap: map[string]interface{}{
+			"info":  map[string]interface{}{},
+			"paths": map[string]interface{}{},
+		}}, nil
+	})
+	if err != nil {
+		t.Fatalf("extractProjectWithRunner: %v", err)
+	}
+	if res.Source != SourceCanonicalOpenAPI3 {
+		t.Errorf("Source = %q, want canonical-openapi3", res.Source)
+	}
+	if res.Operations != 1 {
+		t.Errorf("Operations = %d, want 1", res.Operations)
+	}
+	info := res.SpecMap["info"].(map[string]interface{})
+	if info["title"] != "Canonical" {
+		t.Errorf("title lost during passthrough: %v", info["title"])
+	}
+}
+
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

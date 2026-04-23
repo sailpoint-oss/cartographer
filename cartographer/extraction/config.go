@@ -79,6 +79,13 @@ func ReadConfig(path string) (Config, error) {
 }
 
 // DetectLanguage examines project files to determine the service language.
+// Signals are checked in a priority order that matches the most common
+// service layouts at SailPoint: Go and Java at the root, then nested Go
+// modules (e.g. pag/go/go.mod), then TypeScript (only when a NestJS
+// dependency is present to avoid false positives on docs sites), then
+// Python, then C#. C# is reported even though cartographer cannot extract
+// from it yet so we can record an explicit language-unsupported
+// status instead of silently producing zero operations.
 func DetectLanguage(root string) (lang string, template string) {
 	if fileExists(filepath.Join(root, "go.mod")) {
 		return "go", "atlas-go"
@@ -90,8 +97,16 @@ func DetectLanguage(root string) (lang string, template string) {
 	if fileExists(pkgJSON) && hasNestJSDependency(pkgJSON) {
 		return "typescript", "saas-atlasjs"
 	}
-	// Python is the final fallback: pyproject.toml is the strongest signal,
-	// setup.py / Pipfile / requirements.txt cover legacy and minimal projects.
+	// Nested Go modules: some repos keep the Go sources under go/ (e.g.
+	// pag/go/go.mod) with non-Go siblings at root. We only accept nested
+	// modules when the root has no other strong language signal, which
+	// the checks above already established.
+	if findNestedGoModule(root) != "" {
+		return "go", "atlas-go"
+	}
+	// Python is the final non-C# fallback: pyproject.toml is the strongest
+	// signal, setup.py / Pipfile / requirements.txt cover legacy and
+	// minimal projects.
 	if fileExists(filepath.Join(root, "pyproject.toml")) ||
 		fileExists(filepath.Join(root, "setup.py")) ||
 		fileExists(filepath.Join(root, "setup.cfg")) ||
@@ -99,7 +114,156 @@ func DetectLanguage(root string) (lang string, template string) {
 		fileExists(filepath.Join(root, "requirements.txt")) {
 		return "python", "atlas-python"
 	}
+	if fileExists(filepath.Join(root, "Directory.Build.props")) || hasCSharpProject(root) {
+		return "csharp", "atlas-csharp"
+	}
 	return "", ""
+}
+
+// FindGoModuleRoot returns the absolute directory containing the
+// service's primary go.mod. It honours the "nested module under go/"
+// layout used by polyglot repos like pag. Empty return means no go.mod
+// is reachable from root.
+func FindGoModuleRoot(root string) string {
+	if fileExists(filepath.Join(root, "go.mod")) {
+		return root
+	}
+	return findNestedGoModule(root)
+}
+
+// findNestedGoModule walks a small, well-known set of subdirectories
+// looking for a go.mod. The list is intentionally narrow -- arbitrary
+// recursion over the whole repo is too expensive in CI and would match
+// vendored third-party modules. If we need to expand this later we can
+// extend the candidates slice.
+func findNestedGoModule(root string) string {
+	candidates := []string{"go", "service", "server", "cmd", "src"}
+	for _, c := range candidates {
+		p := filepath.Join(root, c, "go.mod")
+		if fileExists(p) {
+			return filepath.Join(root, c)
+		}
+	}
+	return ""
+}
+
+// hasCSharpProject reports whether root contains any .csproj or .sln
+// file at depth 1 or 2. We deliberately do not walk deeper: the SailPoint
+// .NET services keep project files under src/ or at the repo root.
+func hasCSharpProject(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	check := func(name string) bool {
+		return strings.HasSuffix(strings.ToLower(name), ".csproj") ||
+			strings.HasSuffix(strings.ToLower(name), ".sln")
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			if check(e.Name()) {
+				return true
+			}
+			continue
+		}
+		if e.Name() != "src" {
+			continue
+		}
+		sub := filepath.Join(root, e.Name())
+		subEntries, err := os.ReadDir(sub)
+		if err != nil {
+			continue
+		}
+		for _, se := range subEntries {
+			if !se.IsDir() {
+				if check(se.Name()) {
+					return true
+				}
+				continue
+			}
+			projDir := filepath.Join(sub, se.Name())
+			projEntries, err := os.ReadDir(projDir)
+			if err != nil {
+				continue
+			}
+			for _, pe := range projEntries {
+				if !pe.IsDir() && check(pe.Name()) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// LanguageSignals enumerates every on-disk language indicator found at
+// root. The zero value reports no signals. Order of fields matches the
+// priority order DetectLanguage uses.
+type LanguageSignals struct {
+	Go        bool
+	NestedGo  string // absolute path to the nested module dir, or ""
+	Java      bool
+	NestJS    bool
+	Python    bool
+	CSharp    bool
+	Canonical string // path to any canonical spec discovered, or ""
+}
+
+// Primary returns the single highest-priority language for these
+// signals, matching DetectLanguage's return value. "" when nothing
+// was found.
+func (s LanguageSignals) Primary() string {
+	switch {
+	case s.Go:
+		return "go"
+	case s.Java:
+		return "java"
+	case s.NestJS:
+		return "typescript"
+	case s.NestedGo != "":
+		return "go"
+	case s.Python:
+		return "python"
+	case s.CSharp:
+		return "csharp"
+	default:
+		return ""
+	}
+}
+
+// DetectLanguageSignals mirrors DetectLanguage but returns every signal
+// it finds so callers can report mismatches ("repo claimed atlas-boot
+// but we found go.mod"). The canonical-spec path is populated whenever
+// DiscoverCanonicalSpec would succeed so meridian can decide to short-
+// circuit source extraction even for a correctly-labelled service.
+func DetectLanguageSignals(root string) LanguageSignals {
+	var s LanguageSignals
+	if fileExists(filepath.Join(root, "go.mod")) {
+		s.Go = true
+	} else {
+		s.NestedGo = findNestedGoModule(root)
+	}
+	if fileExists(filepath.Join(root, "build.gradle")) || fileExists(filepath.Join(root, "build.gradle.kts")) || fileExists(filepath.Join(root, "pom.xml")) {
+		s.Java = true
+	}
+	pkgJSON := filepath.Join(root, "package.json")
+	if fileExists(pkgJSON) && hasNestJSDependency(pkgJSON) {
+		s.NestJS = true
+	}
+	if fileExists(filepath.Join(root, "pyproject.toml")) ||
+		fileExists(filepath.Join(root, "setup.py")) ||
+		fileExists(filepath.Join(root, "setup.cfg")) ||
+		fileExists(filepath.Join(root, "Pipfile")) ||
+		fileExists(filepath.Join(root, "requirements.txt")) {
+		s.Python = true
+	}
+	if fileExists(filepath.Join(root, "Directory.Build.props")) || hasCSharpProject(root) {
+		s.CSharp = true
+	}
+	if candidate := firstCanonicalSpecPath(root); candidate != "" {
+		s.Canonical = candidate
+	}
+	return s
 }
 
 // ApplyConfig applies service-local shaping and metadata to an extracted spec.

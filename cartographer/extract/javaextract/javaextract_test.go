@@ -1419,6 +1419,63 @@ func TestSchemaAnnotationsOnDTO(t *testing.T) {
 	t.Error("ItemDTO type not found in results")
 }
 
+// TestJsonPropertyDescriptionAndSchemaExample verifies the two Jackson /
+// OpenAPI-adjacent documentation sources that were previously ignored:
+//
+//  1. @JsonPropertyDescription("...") — Jackson's description annotation used
+//     by teams that don't depend on Swagger annotations.
+//  2. @Schema(example = "...") — promoted to the OpenAPI schema `example` key.
+const jsonPropertyDescriptionDTO = `package com.example.api;
+
+import com.fasterxml.jackson.annotation.JsonPropertyDescription;
+import io.swagger.v3.oas.annotations.media.Schema;
+
+public class ContactDto {
+    @JsonPropertyDescription("Primary contact email address")
+    @Schema(example = "alice@example.com")
+    private String email;
+
+    @JsonPropertyDescription("Whether the contact has verified their email")
+    private boolean verified;
+}
+`
+
+func TestJsonPropertyDescriptionAndSchemaExample(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "com", "example", "api")
+	writeTestFile(t, pkg, "ContactDto.java", jsonPropertyDescriptionDTO)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+
+	var contact *index.TypeDecl
+	for _, d := range result.Types {
+		if d.Name == "ContactDto" {
+			contact = d
+			break
+		}
+	}
+	if contact == nil {
+		t.Fatal("ContactDto type not found")
+	}
+
+	byName := make(map[string]index.FieldDecl)
+	for _, f := range contact.Fields {
+		byName[f.Name] = f
+	}
+	if got := byName["email"].Description; got != "Primary contact email address" {
+		t.Errorf("email description = %q, want Jackson @JsonPropertyDescription", got)
+	}
+	if got := byName["email"].Example; got != "alice@example.com" {
+		t.Errorf("email example = %q, want 'alice@example.com'", got)
+	}
+	if got := byName["verified"].Description; got != "Whether the contact has verified their email" {
+		t.Errorf("verified description = %q, want @JsonPropertyDescription value", got)
+	}
+}
+
 func TestReturnDescriptionInSpec(t *testing.T) {
 	op := &Operation{
 		Path:              "/test",
@@ -3755,6 +3812,143 @@ func keysOfMap(m map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// --- Plugin-registered JAX-RS (Atlas RestDeployment) ---
+
+const atlasPluginSource = `package com.example.api;
+
+import com.sailpoint.atlas.plugin.AtlasPlugin;
+import com.sailpoint.atlas.plugin.PluginConfigurationContext;
+import com.sailpoint.atlas.plugin.PluginDeploymentContext;
+import com.sailpoint.atlas.rest.RestConfig;
+import com.sailpoint.atlas.rest.RestDeployment;
+
+public class MachineIdentityServicePlugin implements AtlasPlugin {
+    @Override
+    public void configure(PluginConfigurationContext context) {}
+
+    @Override
+    public void deploy(PluginDeploymentContext context) {
+        RestConfig restConfig = context.getInstance(RestConfig.class);
+        restConfig.addDeployment(new RestDeployment("/beta/machine-accounts", MachineAccountsRestApplication.class));
+        restConfig.addDeployment(new RestDeployment("/beta/accounts", AccountsRestApplication.class));
+    }
+}
+`
+
+const atlasApplicationSource = `package com.example.api;
+
+public class MachineAccountsRestApplication extends MisRestApplication {
+    public MachineAccountsRestApplication() {
+        add(MachineAccountsResource.class);
+    }
+}
+`
+
+const atlasApplication2Source = `package com.example.api;
+
+public class AccountsRestApplication extends MisRestApplication {
+    public AccountsRestApplication() {
+        add(RecommendationsResource.class);
+    }
+}
+`
+
+const atlasResourceSource = `package com.example.api;
+
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.QueryParam;
+
+@Path("")
+public class MachineAccountsResource {
+
+    @GET
+    public Object listAccounts(@QueryParam("limit") int limit) {
+        return null;
+    }
+
+    @GET
+    @Path("/{accountId}")
+    public Object getAccount(@PathParam("accountId") String accountId) {
+        return null;
+    }
+
+    @POST
+    public Object createAccount(Object body) {
+        return null;
+    }
+}
+`
+
+const atlasResource2Source = `package com.example.api;
+
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.Path;
+
+@Path("/recommendations")
+public class RecommendationsResource {
+
+    @GET
+    public Object getRecommendations() {
+        return null;
+    }
+}
+`
+
+// TestRestDeploymentBasePath verifies that JAX-RS resources registered through
+// the Atlas plugin lifecycle (via `new RestDeployment("/base", AppClass.class)`)
+// pick up the Application's base path when the resource's own @Path is empty
+// or a bare fragment.
+func TestRestDeploymentBasePath(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "src", "main", "java", "com", "example", "api")
+	writeTestFile(t, pkg, "MachineIdentityServicePlugin.java", atlasPluginSource)
+	writeTestFile(t, pkg, "MachineAccountsRestApplication.java", atlasApplicationSource)
+	writeTestFile(t, pkg, "AccountsRestApplication.java", atlasApplication2Source)
+	writeTestFile(t, pkg, "MachineAccountsResource.java", atlasResourceSource)
+	writeTestFile(t, pkg, "RecommendationsResource.java", atlasResource2Source)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+
+	got := make(map[string]string)
+	for _, op := range result.Operations {
+		got[op.Method+" "+op.Path] = op.OperationID
+	}
+
+	want := []string{
+		"GET /beta/machine-accounts",
+		"GET /beta/machine-accounts/{accountId}",
+		"POST /beta/machine-accounts",
+		"GET /beta/accounts/recommendations",
+	}
+	for _, key := range want {
+		if _, ok := got[key]; !ok {
+			t.Errorf("missing operation %q; got: %v", key, keysOfMap(mapStringInterface(got)))
+		}
+	}
+
+	for key := range got {
+		if key == "GET /{accountId}" || key == "GET " || key == "POST " {
+			t.Errorf("operation %q kept its naked resource path instead of inheriting RestDeployment base", key)
+		}
+	}
+}
+
+// mapStringInterface is a tiny helper so we can reuse keysOfMap with a
+// map[string]string.
+func mapStringInterface(m map[string]string) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // Verify the unused import is used

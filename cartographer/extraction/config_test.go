@@ -233,6 +233,94 @@ func TestDetectLanguage_GoBeatsPython(t *testing.T) {
 	}
 }
 
+// TestDetectLanguage_NestedGoModule covers the polyglot repo layout where
+// Go sources live under go/ alongside non-Go tooling.
+func TestDetectLanguage_NestedGoModule(t *testing.T) {
+	dir := t.TempDir()
+	goDir := filepath.Join(dir, "go")
+	if err := os.MkdirAll(goDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goDir, "go.mod"), []byte("module test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lang, tmpl := DetectLanguage(dir)
+	if lang != "go" || tmpl != "atlas-go" {
+		t.Errorf("nested go.mod not detected: lang=%v, template=%v", lang, tmpl)
+	}
+
+	// FindGoModuleRoot should report the nested directory, not the repo root.
+	got := FindGoModuleRoot(dir)
+	if got != goDir {
+		t.Errorf("FindGoModuleRoot = %q, want %q", got, goDir)
+	}
+}
+
+// TestDetectLanguage_CSharp covers the .NET / Das service layout so
+// meridian can surface an explicit language-unsupported status.
+func TestDetectLanguage_CSharp(t *testing.T) {
+	t.Run("Directory.Build.props", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "Directory.Build.props"), []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		lang, tmpl := DetectLanguage(dir)
+		if lang != "csharp" || tmpl != "atlas-csharp" {
+			t.Errorf("lang=%v, template=%v", lang, tmpl)
+		}
+	})
+
+	t.Run("nested .csproj under src", func(t *testing.T) {
+		dir := t.TempDir()
+		proj := filepath.Join(dir, "src", "MyApi")
+		if err := os.MkdirAll(proj, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(proj, "MyApi.csproj"), []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		lang, tmpl := DetectLanguage(dir)
+		if lang != "csharp" || tmpl != "atlas-csharp" {
+			t.Errorf("lang=%v, template=%v", lang, tmpl)
+		}
+	})
+}
+
+func TestDetectLanguageSignals_ReportsEverySignal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.gradle"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "openapi.yaml"), []byte("openapi: 3.0.0\ninfo: {title: t, version: 1}\npaths: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sig := DetectLanguageSignals(dir)
+	if !sig.Java {
+		t.Error("expected Java signal")
+	}
+	if sig.Canonical == "" {
+		t.Error("expected canonical spec path populated")
+	}
+	if sig.Primary() != "java" {
+		t.Errorf("Primary() = %q, want java", sig.Primary())
+	}
+}
+
+func TestDetectLanguageSignals_MismatchDetection(t *testing.T) {
+	// Claim "java" on a repo that's clearly Go (mislabeled atlas-boot service).
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sig := DetectLanguageSignals(dir)
+	if !sig.Go {
+		t.Fatal("expected Go signal")
+	}
+	if sig.Primary() != "go" {
+		t.Errorf("Primary() = %q, want go", sig.Primary())
+	}
+}
+
 func TestGenerateInitYAML(t *testing.T) {
 	output := GenerateInitYAML("Test Service", "go", "atlas-go", " (auto-detected: go)")
 

@@ -103,6 +103,16 @@ type extractContext struct {
 	idx               *index.Index
 	verbose           bool
 	exceptionHandlers map[string]int // exception class name -> HTTP status code (from @ControllerAdvice / ExceptionMapper)
+
+	// Atlas plugin-registered JAX-RS applications.
+	// appBasePaths maps an Application class simple name to the context path registered
+	// via `new RestDeployment("/path", AppClass.class)`. addedBy records which class
+	// registered a given target via `add(Target.class)` (or `register(...)`) in its
+	// constructor body. resourceBasePaths is the resolved transitive closure mapping
+	// JAX-RS resource class names to the prefix they serve under.
+	appBasePaths      map[string]string
+	addedBy           map[string][]string // target class -> list of classes whose body adds it
+	resourceBasePaths map[string]string   // resource class -> effective base path
 }
 
 // Extract performs tree-sitter based Java extraction.
@@ -133,11 +143,15 @@ func Extract(cfg Config) (*Result, error) {
 		idx:               idx,
 		verbose:           cfg.Verbose,
 		exceptionHandlers: make(map[string]int),
+		appBasePaths:      make(map[string]string),
+		addedBy:           make(map[string][]string),
+		resourceBasePaths: make(map[string]string),
 	}
 	for _, dir := range dirs {
 		buildConstantTable(pool, dir, ctx)
 	}
 	resolveConstants(ctx.constants)
+	resolvePluginDeployments(ctx)
 
 	// Now extract operations from controller/resource classes
 	result := &Result{
@@ -202,9 +216,226 @@ func buildConstantTable(pool *parser.Pool, rootDir string, ctx *extractContext) 
 				}
 			}()
 			collectFileConstants(tree.RootNode(), source, ctx)
+			collectFilePluginDeployments(tree.RootNode(), source, ctx)
 		}()
 		return nil
 	})
+}
+
+// collectFilePluginDeployments records Atlas plugin-registered JAX-RS Application
+// deployments and the resource classes each Application registers, so we can
+// resolve base paths for JAX-RS resources that rely on plugin-level routing
+// (e.g. `@Path("")` on the class, with the prefix supplied by
+// `new RestDeployment("/beta/accounts", AccountsRestApplication.class)`).
+func collectFilePluginDeployments(root *tree_sitter.Node, source []byte, ctx *extractContext) {
+	for i := uint(0); i < root.ChildCount(); i++ {
+		child := root.Child(i)
+		if child.Kind() == "class_declaration" {
+			collectClassPluginDeployments(child, source, ctx)
+		}
+	}
+}
+
+func collectClassPluginDeployments(classNode *tree_sitter.Node, source []byte, ctx *extractContext) {
+	className := ""
+	var classBody *tree_sitter.Node
+	for i := uint(0); i < classNode.ChildCount(); i++ {
+		child := classNode.Child(i)
+		switch child.Kind() {
+		case "identifier":
+			if className == "" {
+				className = child.Utf8Text(source)
+			}
+		case "class_body":
+			classBody = child
+		}
+	}
+	if classBody == nil {
+		return
+	}
+	walkForPluginRegistrations(classBody, source, className, ctx)
+}
+
+// walkForPluginRegistrations recursively scans a class body for
+//   - `new RestDeployment("path", AppClass.class)` constructor calls, which
+//     register an Application class at a base path.
+//   - `add(ClassName.class)` and `register(ClassName.class)` calls, which record
+//     that the enclosing class contributes a resource/application to the one it
+//     was added from (enabling transitive base-path resolution).
+//
+// Nested classes and anonymous inner classes use their enclosing class name.
+func walkForPluginRegistrations(node *tree_sitter.Node, source []byte, enclosingClass string, ctx *extractContext) {
+	if node == nil {
+		return
+	}
+	kind := node.Kind()
+	switch kind {
+	case "object_creation_expression":
+		recordRestDeploymentCall(node, source, ctx)
+	case "method_invocation":
+		recordResourceRegistrationCall(node, source, enclosingClass, ctx)
+	}
+	for i := uint(0); i < node.ChildCount(); i++ {
+		walkForPluginRegistrations(node.Child(i), source, enclosingClass, ctx)
+	}
+}
+
+// recordRestDeploymentCall captures `new RestDeployment("/base", AppClass.class)`.
+func recordRestDeploymentCall(node *tree_sitter.Node, source []byte, ctx *extractContext) {
+	typeNode := findChildKind(node, "type_identifier")
+	if typeNode == nil || typeNode.Utf8Text(source) != "RestDeployment" {
+		return
+	}
+	argList := findChildKind(node, "argument_list")
+	if argList == nil {
+		return
+	}
+	args := collectArguments(argList, source)
+	if len(args) < 2 {
+		return
+	}
+	basePath := resolveStringArgument(args[0], ctx.constants)
+	appClass := stripClassLiteral(args[1])
+	if basePath == "" || appClass == "" {
+		return
+	}
+	if !strings.HasPrefix(basePath, "/") {
+		basePath = "/" + basePath
+	}
+	// Preserve the first registration we see; duplicate Application classes would
+	// indicate an ambiguous registration we can't disambiguate statically.
+	if _, exists := ctx.appBasePaths[appClass]; !exists {
+		ctx.appBasePaths[appClass] = basePath
+	}
+}
+
+// recordResourceRegistrationCall captures `add(ClassName.class)` / `register(ClassName.class)`
+// inside a class body and remembers that `enclosingClass` registered `ClassName`.
+func recordResourceRegistrationCall(node *tree_sitter.Node, source []byte, enclosingClass string, ctx *extractContext) {
+	if enclosingClass == "" {
+		return
+	}
+	nameNode := findChildKind(node, "identifier")
+	if nameNode == nil {
+		return
+	}
+	name := nameNode.Utf8Text(source)
+	if name != "add" && name != "register" {
+		return
+	}
+	argList := findChildKind(node, "argument_list")
+	if argList == nil {
+		return
+	}
+	args := collectArguments(argList, source)
+	if len(args) == 0 {
+		return
+	}
+	target := stripClassLiteral(args[0])
+	if target == "" || target == enclosingClass {
+		return
+	}
+	ctx.addedBy[target] = append(ctx.addedBy[target], enclosingClass)
+}
+
+// resolvePluginDeployments walks `addedBy` from every Application class with a
+// known base path to its registered resources, propagating the base path
+// transitively so nested Application-of-Application structures still resolve.
+func resolvePluginDeployments(ctx *extractContext) {
+	for app, basePath := range ctx.appBasePaths {
+		assignResourceBasePaths(ctx, app, basePath, map[string]bool{})
+	}
+}
+
+func assignResourceBasePaths(ctx *extractContext, class, basePath string, visited map[string]bool) {
+	if visited[class] {
+		return
+	}
+	visited[class] = true
+	// Every class reachable from an Application is treated as a resource and
+	// inherits the Application's base path. If multiple Applications register
+	// the same resource with different prefixes, we keep the first assignment —
+	// the in-source ordering of RestDeployment registrations determines which
+	// wins, which matches runtime behaviour where the first match handles the
+	// request.
+	for _, registered := range registeredBy(ctx, class) {
+		if _, exists := ctx.resourceBasePaths[registered]; !exists {
+			ctx.resourceBasePaths[registered] = basePath
+		}
+		assignResourceBasePaths(ctx, registered, basePath, visited)
+	}
+}
+
+func registeredBy(ctx *extractContext, parent string) []string {
+	var children []string
+	for child, parents := range ctx.addedBy {
+		for _, p := range parents {
+			if p == parent {
+				children = append(children, child)
+				break
+			}
+		}
+	}
+	return children
+}
+
+// findChildKind returns the first direct child of node with the given kind, or nil.
+func findChildKind(node *tree_sitter.Node, kind string) *tree_sitter.Node {
+	for i := uint(0); i < node.ChildCount(); i++ {
+		child := node.Child(i)
+		if child.Kind() == kind {
+			return child
+		}
+	}
+	return nil
+}
+
+// collectArguments returns the text of each top-level argument in an argument_list.
+func collectArguments(argList *tree_sitter.Node, source []byte) []string {
+	var args []string
+	for i := uint(0); i < argList.ChildCount(); i++ {
+		child := argList.Child(i)
+		kind := child.Kind()
+		if kind == "(" || kind == ")" || kind == "," {
+			continue
+		}
+		args = append(args, child.Utf8Text(source))
+	}
+	return args
+}
+
+// stripClassLiteral converts `Foo.class` to `Foo`, trimming any surrounding whitespace.
+// Returns an empty string if the input doesn't look like a class literal.
+func stripClassLiteral(text string) string {
+	text = strings.TrimSpace(text)
+	if !strings.HasSuffix(text, ".class") {
+		return ""
+	}
+	name := strings.TrimSuffix(text, ".class")
+	if dot := strings.LastIndex(name, "."); dot >= 0 {
+		name = name[dot+1:]
+	}
+	return strings.TrimSpace(name)
+}
+
+// resolveStringArgument resolves an argument expression to a string literal.
+// Handles quoted literals, named constants, and Java "+" concatenation through
+// the shared constant table.
+func resolveStringArgument(raw string, constants map[string]string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if len(raw) >= 2 && strings.HasPrefix(raw, "\"") && strings.HasSuffix(raw, "\"") && !strings.Contains(raw, "\" + ") {
+		return raw[1 : len(raw)-1]
+	}
+	if constants != nil {
+		resolved := resolveAnnotationValue(raw, constants)
+		if resolved != raw {
+			return resolved
+		}
+	}
+	return ""
 }
 
 // collectFileConstants extracts constants and class base paths from a Java file AST.
@@ -666,6 +897,17 @@ func extractClassOperations(classNode *tree_sitter.Node, source []byte, filePath
 		return nil
 	}
 
+	// For JAX-RS resources registered through the Atlas plugin lifecycle
+	// (via `new RestDeployment("/base", AppClass.class)` in a Plugin/Module class),
+	// the resource's own @Path is usually "" or a leaf fragment. Prepend the
+	// Application's registered base path when we know about it.
+	if framework == "jaxrs" {
+		className := extractClassName(classNode, source)
+		if appBase, ok := ctx.resourceBasePaths[className]; ok && appBase != "" {
+			basePath = joinPaths(appBase, basePath)
+		}
+	}
+
 	// Check for parent class base path (C3: inheritance)
 	superClass := extractSuperClassName(classNode, source)
 	if superClass != "" {
@@ -712,6 +954,17 @@ func extractClassOperations(classNode *tree_sitter.Node, source []byte, filePath
 	}
 
 	return ops
+}
+
+// extractClassName returns the simple name of a class_declaration node.
+func extractClassName(classNode *tree_sitter.Node, source []byte) string {
+	for i := uint(0); i < classNode.ChildCount(); i++ {
+		child := classNode.Child(i)
+		if child.Kind() == "identifier" {
+			return child.Utf8Text(source)
+		}
+	}
+	return ""
 }
 
 // extractSuperClassName extracts the parent class name from the extends clause.

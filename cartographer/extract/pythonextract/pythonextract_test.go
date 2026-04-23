@@ -182,7 +182,7 @@ func TestFastAPIExtraction(t *testing.T) {
 		byKey[op.Method+" "+op.Path] = op
 	}
 
-	if op, ok := byKey["GET /"]; ok {
+	if op, ok := byKey["GET /api/v1/users"]; ok {
 		if op.OperationID != "list_users" {
 			t.Errorf("expected operationId=list_users, got %q", op.OperationID)
 		}
@@ -199,10 +199,10 @@ func TestFastAPIExtraction(t *testing.T) {
 			t.Errorf("expected >=3 query params, got %d: %+v", queryCount, op.Parameters)
 		}
 	} else {
-		t.Error("missing GET / operation")
+		t.Errorf("missing GET /api/v1/users operation (router prefix not applied); got keys: %v", keysOfOps(byKey))
 	}
 
-	if op, ok := byKey["GET /{user_id}"]; ok {
+	if op, ok := byKey["GET /api/v1/users/{user_id}"]; ok {
 		if op.OperationID != "get_user" {
 			t.Errorf("expected operationId=get_user, got %q", op.OperationID)
 		}
@@ -216,29 +216,29 @@ func TestFastAPIExtraction(t *testing.T) {
 			t.Error("expected user_id path parameter")
 		}
 	} else {
-		t.Error("missing GET /{user_id} operation")
+		t.Error("missing GET /api/v1/users/{user_id} operation")
 	}
 
-	if op, ok := byKey["POST /"]; ok {
+	if op, ok := byKey["POST /api/v1/users"]; ok {
 		if op.ResponseStatus != 201 {
 			t.Errorf("expected status 201, got %d", op.ResponseStatus)
 		}
 		if op.RequestBodyType == "" {
-			t.Error("POST / should have a request body type")
+			t.Error("POST /api/v1/users should have a request body type")
 		}
 		if !strings.Contains(op.RequestBodyType, "CreateUserDto") {
 			t.Errorf("expected CreateUserDto body, got %q", op.RequestBodyType)
 		}
 	} else {
-		t.Error("missing POST / operation")
+		t.Error("missing POST /api/v1/users operation")
 	}
 
-	if op, ok := byKey["DELETE /{user_id}"]; ok {
+	if op, ok := byKey["DELETE /api/v1/users/{user_id}"]; ok {
 		if op.ResponseStatus != 204 {
 			t.Errorf("expected status 204, got %d", op.ResponseStatus)
 		}
 	} else {
-		t.Error("missing DELETE /{user_id} operation")
+		t.Error("missing DELETE /api/v1/users/{user_id} operation")
 	}
 
 	// Pydantic model should be indexed
@@ -282,11 +282,17 @@ func TestFlaskExtraction(t *testing.T) {
 			if op.Method != "GET" {
 				t.Errorf("expected users first method=GET, got %q", op.Method)
 			}
+			if op.Path != "/users" {
+				t.Errorf("expected Blueprint url_prefix to apply: /users, got %q", op.Path)
+			}
 		}
 		if op.OperationID == "delete_user" {
 			foundDelete = true
 			if op.Method != "DELETE" {
 				t.Errorf("expected delete_user method=DELETE, got %q", op.Method)
+			}
+			if op.Path != "/users/<user_id>" {
+				t.Errorf("expected Blueprint url_prefix to apply: /users/<user_id>, got %q", op.Path)
 			}
 		}
 	}
@@ -296,6 +302,129 @@ func TestFlaskExtraction(t *testing.T) {
 	if !foundDelete {
 		t.Error("missing delete_user operation")
 	}
+}
+
+// --- FastAPI app.include_router(prefix=...) -----------------------------------
+
+const fastapiMountedRouterSource = `from fastapi import APIRouter, FastAPI
+
+app = FastAPI()
+users = APIRouter(prefix="/users", tags=["users"])
+
+
+@users.get("/")
+async def list_users():
+    """List users."""
+    return []
+
+
+@users.get("/{user_id}")
+async def get_user(user_id: str):
+    """Get a user."""
+    return None
+
+
+app.include_router(users, prefix="/api/v1")
+`
+
+// TestFastAPIIncludeRouterPrefix verifies that the prefix supplied to
+// app.include_router is combined with the router's own prefix, so a route
+// defined as @users.get("/{user_id}") on users = APIRouter(prefix="/users")
+// included via app.include_router(users, prefix="/api/v1") resolves to the
+// fully qualified path "/api/v1/users/{user_id}".
+func TestFastAPIIncludeRouterPrefix(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "routes.py", fastapiMountedRouterSource)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+
+	byKey := make(map[string]*Operation)
+	for _, op := range result.Operations {
+		byKey[op.Method+" "+op.Path] = op
+	}
+
+	wants := []string{
+		"GET /api/v1/users",
+		"GET /api/v1/users/{user_id}",
+	}
+	for _, k := range wants {
+		if _, ok := byKey[k]; !ok {
+			t.Errorf("missing operation %q; include_router prefix not combined with router prefix. got keys: %v", k, keysOfOps(byKey))
+		}
+	}
+}
+
+func keysOfOps(m map[string]*Operation) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// TestPydanticFieldExampleAndDescription verifies that Pydantic Field(...)
+// description and example kwargs (both `example=` and `examples=[...]`) are
+// captured on the resulting type's fields. This is what ultimately lets the
+// OpenAPI schema emit `description` and `example` entries for Pydantic DTOs.
+const pydanticFixture = `from pydantic import BaseModel, Field
+
+
+class Contact(BaseModel):
+    """A contact entry."""
+
+    email: str = Field(..., description="Primary contact email", example="alice@example.com")
+    verified: bool = Field(False, description="Whether the contact has verified their email")
+    tags: list[str] = Field(default_factory=list, examples=[["friend", "colleague"]])
+`
+
+func TestPydanticFieldExampleAndDescription(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "models.py", pydanticFixture)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+
+	contact, ok := result.Types["Contact"]
+	if !ok {
+		t.Fatalf("Contact type not found; got: %v", keysOfTypes(result.Types))
+	}
+
+	byName := map[string]struct {
+		Description string
+		Example     string
+	}{}
+	for _, f := range contact.Fields {
+		byName[f.Name] = struct {
+			Description string
+			Example     string
+		}{f.Description, f.Example}
+	}
+
+	if got := byName["email"].Description; got != "Primary contact email" {
+		t.Errorf("email description = %q, want 'Primary contact email'", got)
+	}
+	if got := byName["email"].Example; got != "alice@example.com" {
+		t.Errorf("email example = %q, want 'alice@example.com'", got)
+	}
+	if got := byName["verified"].Description; got != "Whether the contact has verified their email" {
+		t.Errorf("verified description = %q, want Pydantic Field description", got)
+	}
+	if got := byName["tags"].Example; got == "" {
+		t.Error("expected tags example from examples=[[...]] kwarg, got empty")
+	}
+}
+
+func keysOfTypes[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // --- Starlette tests ---
