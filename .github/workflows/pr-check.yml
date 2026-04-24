@@ -3,7 +3,15 @@ name: Cartographer PR Check
 on:
   pull_request:
     paths:
-      - cartographer/**
+      - "go.mod"
+      - "go.sum"
+      - "cmd/**"
+      - "extract/**"
+      - "extraction/**"
+      - "sourceloc/**"
+      - "sourcemap/**"
+      - "main.go"
+      - "action_test.go"
       - action.yml
       - README.md
       - CLAUDE.md
@@ -25,19 +33,16 @@ jobs:
         with:
           go-version: "1.25.x"
           cache: true
-          cache-dependency-path: cartographer/go.sum
+          cache-dependency-path: go.sum
 
       - name: Build cartographer
         id: build
         run: |
-          cd cartographer
           go build -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=pr-${{ github.sha }}" -o cartographer .
 
       - name: Test cartographer
         id: test
-        run: |
-          cd cartographer
-          go test ./... -count=1
+        run: go test ./... -count=1
 
       - name: PR summary
         if: always()

@@ -4,7 +4,15 @@ on:
   push:
     branches: [main]
     paths:
-      - cartographer/**
+      - "go.mod"
+      - "go.sum"
+      - "cmd/**"
+      - "extract/**"
+      - "extraction/**"
+      - "sourceloc/**"
+      - "sourcemap/**"
+      - "main.go"
+      - "action_test.go"
       - action.yml
       - Makefile
   workflow_dispatch:
@@ -33,18 +41,17 @@ jobs:
         with:
           go-version: "1.25.x"
           cache: true
-          cache-dependency-path: cartographer/go.sum
+          cache-dependency-path: go.sum
 
       - name: Vet cartographer
-        run: cd cartographer && go vet ./...
+        run: go vet ./...
 
       - name: Build cartographer
         run: |
-          cd cartographer
           go build -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=ci-${{ github.sha }}" -o cartographer .
 
       - name: Test cartographer
-        run: cd cartographer && go test ./... -count=1
+        run: go test ./... -count=1
 
       - name: Bump version and push tag
         id: tag
@@ -104,7 +111,7 @@ jobs:
         with:
           go-version: "1.25.x"
           cache: true
-          cache-dependency-path: cartographer/go.sum
+          cache-dependency-path: go.sum
 
       - name: Build release binary
         shell: bash
@@ -115,10 +122,9 @@ jobs:
           set -euo pipefail
           staging_dir="release-staging/cartographer_${{ needs.release.outputs.tag_name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
           mkdir -p "$staging_dir"
-          cd cartographer
           go build \
             -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=${{ needs.release.outputs.tag_name }} -X github.com/sailpoint-oss/cartographer/cmd.Commit=${{ github.sha }} -X github.com/sailpoint-oss/cartographer/cmd.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o "../$staging_dir/${{ matrix.binary_name }}" .
+            -o "$staging_dir/${{ matrix.binary_name }}" .
 
       - name: Package tarball
         if: matrix.archive_ext == 'tar.gz'

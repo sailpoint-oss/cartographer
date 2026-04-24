@@ -33,7 +33,7 @@ type cartographerActionStep struct {
 }
 
 func TestActionYAML_ExposesExtractionContract(t *testing.T) {
-	data, err := os.ReadFile("../action.yml")
+	data, err := os.ReadFile("action.yml")
 	if err != nil {
 		t.Fatalf("read action.yml: %v", err)
 	}

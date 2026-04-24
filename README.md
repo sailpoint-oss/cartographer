@@ -20,7 +20,7 @@ cd cartographer
 make build
 ```
 
-The binary is written to `cartographer/cartographer`.
+The binary is written to `./cartographer` at the repository root (the clone directory is commonly named `cartographer`).
 
 ## Quick start
 
@@ -121,13 +121,13 @@ Cartographer now publishes from `main` automatically.
 ## Local development
 
 ```bash
-cd cartographer && go test ./...
+go test ./...
 ```
 
 For local multi-repo development, prefer a short-lived `go.work` instead of long-lived `replace` directives:
 
 ```bash
-go work init ./cartographer ../your-consumer
+go work init . ../your-consumer
 go work use ../navigator ../barrelman
 ```
 

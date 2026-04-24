@@ -52,17 +52,17 @@ runs:
       with:
         go-version: ${{ inputs.go-version }}
         cache: true
-        cache-dependency-path: ${{ github.action_path }}/cartographer/go.sum
+        cache-dependency-path: ${{ github.action_path }}/go.sum
 
     - name: Build cartographer
       shell: bash
-      run: cd "${{ github.action_path }}/cartographer" && go build -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=action" -o cartographer .
+      run: cd "${{ github.action_path }}" && go build -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=action" -o cartographer .
 
     - name: Extract OpenAPI spec
       id: extract
       shell: bash
       env:
-        CARTOGRAPHER_BIN: ${{ github.action_path }}/cartographer/cartographer
+        CARTOGRAPHER_BIN: ${{ github.action_path }}/cartographer
         CART_DIR: ${{ inputs.cartographer-dir }}
         PROJECT_ROOT: ${{ inputs.project-root }}
         SPEC_PATH: ${{ inputs.spec-path }}

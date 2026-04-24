@@ -23,7 +23,7 @@ logs
 .DS_Store
 
 # Go build artifacts
-cartographer/cartographer
+/cartographer
 
 # Go workspace (local dev only — CI uses published modules)
 go.work

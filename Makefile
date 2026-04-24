@@ -6,7 +6,7 @@
 
 .DEFAULT_GOAL := help
 
-TOOL := cartographer/cartographer
+TOOL := ./cartographer
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -27,11 +27,11 @@ help: ## Show this help message
 
 build: ## Build the cartographer binary
 	@echo "Building cartographer..."
-	cd cartographer && go build -ldflags "$(LDFLAGS)" -o cartographer .
+	go build -ldflags "$(LDFLAGS)" -o cartographer .
 	@echo "Built: $(TOOL)"
 
 test: ## Run cartographer unit tests
-	cd cartographer && go test ./...
+	go test ./...
 
 extract-go: build ## Extract a single Go service (usage: make extract-go ROOT=../svc TITLE="Service")
 	$(TOOL) extract --lang go --root "$(ROOT)" --title "$(TITLE)" --output "$(notdir $(ROOT))-openapi.yaml"
@@ -43,4 +43,4 @@ extract-ts: build ## Extract a single TypeScript service (usage: make extract-ts
 	$(TOOL) extract --lang typescript --root "$(ROOT)" --title "$(TITLE)" --output "$(notdir $(ROOT))-openapi.yaml"
 
 clean: ## Remove built binary
-	rm -f cartographer/cartographer
+	rm -f cartographer

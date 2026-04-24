@@ -9,14 +9,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 - `cartographer extract`
 - `cartographer init`
 - the public GitHub Action at `action.yml`
-- the reusable extraction API in `cartographer/extraction`
-- language-specific extraction internals in `cartographer/extract`
+- the reusable extraction API in `extraction/`
+- language-specific extraction internals in `extract/`
 
 ## Build and test commands
 
 ```bash
-make build   # Build cartographer binary (output: cartographer/cartographer)
-make test    # Run all Go tests: cd cartographer && go test ./...
+make build   # Build cartographer binary (output: ./cartographer)
+make test    # Run all Go tests: go test ./...
 ```
 
 Single-service extraction examples:
@@ -30,13 +30,13 @@ make extract-ts ROOT=../example-ts-service TITLE="Example TS Service"
 Run a single Go test:
 
 ```bash
-cd cartographer && go test ./extract/goextract/ -run TestFunctionName -v
+go test ./extract/goextract/ -run TestFunctionName -v
 ```
 
 Local multi-repo development (optional — `go.work` is gitignored):
 
 ```bash
-go work init ./cartographer ../your-consumer
+go work init . ../your-consumer
 go work use ../navigator ../barrelman
 ```
 
@@ -45,10 +45,10 @@ go work use ../navigator ../barrelman
 ### Go module and entry point
 
 - Module: `github.com/sailpoint-oss/cartographer`
-- Entry: `cartographer/main.go` -> `cmd.Execute()`
+- Entry: `main.go` -> `cmd.Execute()`
 - Build injects version/commit/date via ldflags
 
-### Package layout (`cartographer/`)
+### Package layout (repository root)
 
 | Package | Purpose |
 |---------|---------|

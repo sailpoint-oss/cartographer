@@ -5,14 +5,30 @@ on:
   push:
     branches: [main]
     paths:
-      - cartographer/**
+      - "go.mod"
+      - "go.sum"
+      - "cmd/**"
+      - "extract/**"
+      - "extraction/**"
+      - "sourceloc/**"
+      - "sourcemap/**"
+      - "main.go"
+      - "action_test.go"
       - action.yml
       - README.md
       - CLAUDE.md
       - Makefile
   pull_request:
     paths:
-      - cartographer/**
+      - "go.mod"
+      - "go.sum"
+      - "cmd/**"
+      - "extract/**"
+      - "extraction/**"
+      - "sourceloc/**"
+      - "sourcemap/**"
+      - "main.go"
+      - "action_test.go"
       - action.yml
       - README.md
       - CLAUDE.md
@@ -33,22 +49,19 @@ jobs:
         with:
           go-version: "1.25.x"
           cache: true
-          cache-dependency-path: cartographer/go.sum
+          cache-dependency-path: go.sum
 
       - name: Build cartographer
         run: |
-          cd cartographer
           go build -ldflags "-X github.com/sailpoint-oss/cartographer/cmd.Version=ci-${{ github.sha }}" -o cartographer .
 
       - name: Test cartographer
         run: |
-          cd cartographer
           go test ./... -coverprofile=coverage.out -count=1
 
       - name: Coverage summary
         if: always()
         run: |
-          cd cartographer
           if [ -f coverage.out ]; then
             total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}')
             {
@@ -64,5 +77,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cartographer-coverage
-          path: cartographer/coverage.out
+          path: coverage.out
           if-no-files-found: ignore
