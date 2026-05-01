@@ -110,9 +110,9 @@ type extractContext struct {
 	// registered a given target via `add(Target.class)` (or `register(...)`) in its
 	// constructor body. resourceBasePaths is the resolved transitive closure mapping
 	// JAX-RS resource class names to the prefix they serve under.
-	appBasePaths      map[string]string
+	appBasePaths      map[string][]string
 	addedBy           map[string][]string // target class -> list of classes whose body adds it
-	resourceBasePaths map[string]string   // resource class -> effective base path
+	resourceBasePaths map[string][]string // resource class -> effective base paths
 }
 
 // Extract performs tree-sitter based Java extraction.
@@ -143,15 +143,16 @@ func Extract(cfg Config) (*Result, error) {
 		idx:               idx,
 		verbose:           cfg.Verbose,
 		exceptionHandlers: make(map[string]int),
-		appBasePaths:      make(map[string]string),
+		appBasePaths:      make(map[string][]string),
 		addedBy:           make(map[string][]string),
-		resourceBasePaths: make(map[string]string),
+		resourceBasePaths: make(map[string][]string),
 	}
 	for _, dir := range dirs {
 		buildConstantTable(pool, dir, ctx)
 	}
 	resolveConstants(ctx.constants)
 	resolvePluginDeployments(ctx)
+	resolveSubResourceLocators(pool, dirs, ctx)
 
 	// Now extract operations from controller/resource classes
 	result := &Result{
@@ -226,7 +227,7 @@ func buildConstantTable(pool *parser.Pool, rootDir string, ctx *extractContext) 
 // deployments and the resource classes each Application registers, so we can
 // resolve base paths for JAX-RS resources that rely on plugin-level routing
 // (e.g. `@Path("")` on the class, with the prefix supplied by
-// `new RestDeployment("/beta/accounts", AccountsRestApplication.class)`).
+// `new RestDeployment("/example/resources", ResourcesApplication.class)`).
 func collectFilePluginDeployments(root *tree_sitter.Node, source []byte, ctx *extractContext) {
 	for i := uint(0); i < root.ChildCount(); i++ {
 		child := root.Child(i)
@@ -302,11 +303,7 @@ func recordRestDeploymentCall(node *tree_sitter.Node, source []byte, ctx *extrac
 	if !strings.HasPrefix(basePath, "/") {
 		basePath = "/" + basePath
 	}
-	// Preserve the first registration we see; duplicate Application classes would
-	// indicate an ambiguous registration we can't disambiguate statically.
-	if _, exists := ctx.appBasePaths[appClass]; !exists {
-		ctx.appBasePaths[appClass] = basePath
-	}
+	ctx.appBasePaths[appClass] = appendUniqueString(ctx.appBasePaths[appClass], basePath)
 }
 
 // recordResourceRegistrationCall captures `add(ClassName.class)` / `register(ClassName.class)`
@@ -342,8 +339,10 @@ func recordResourceRegistrationCall(node *tree_sitter.Node, source []byte, enclo
 // known base path to its registered resources, propagating the base path
 // transitively so nested Application-of-Application structures still resolve.
 func resolvePluginDeployments(ctx *extractContext) {
-	for app, basePath := range ctx.appBasePaths {
-		assignResourceBasePaths(ctx, app, basePath, map[string]bool{})
+	for app, basePaths := range ctx.appBasePaths {
+		for _, basePath := range basePaths {
+			assignResourceBasePaths(ctx, app, basePath, map[string]bool{})
+		}
 	}
 }
 
@@ -353,15 +352,11 @@ func assignResourceBasePaths(ctx *extractContext, class, basePath string, visite
 	}
 	visited[class] = true
 	// Every class reachable from an Application is treated as a resource and
-	// inherits the Application's base path. If multiple Applications register
-	// the same resource with different prefixes, we keep the first assignment —
-	// the in-source ordering of RestDeployment registrations determines which
-	// wins, which matches runtime behaviour where the first match handles the
-	// request.
+	// inherits every Application base path that registers it. Projects can mount
+	// the same resource under multiple deployments, and each mount represents a
+	// real externally routable path.
 	for _, registered := range registeredBy(ctx, class) {
-		if _, exists := ctx.resourceBasePaths[registered]; !exists {
-			ctx.resourceBasePaths[registered] = basePath
-		}
+		ctx.resourceBasePaths[registered] = appendUniqueString(ctx.resourceBasePaths[registered], basePath)
 		assignResourceBasePaths(ctx, registered, basePath, visited)
 	}
 }
@@ -377,6 +372,144 @@ func registeredBy(ctx *extractContext, parent string) []string {
 		}
 	}
 	return children
+}
+
+func resolveSubResourceLocators(pool *parser.Pool, dirs []string, ctx *extractContext) {
+	changed := true
+	for changed {
+		changed = false
+		for _, dir := range dirs {
+			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return nil
+				}
+				if info.IsDir() {
+					base := info.Name()
+					if base == "node_modules" || base == ".git" || base == "build" || base == "target" || base == "test" {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				if !strings.HasSuffix(path, ".java") {
+					return nil
+				}
+				source, err := os.ReadFile(path)
+				if err != nil {
+					return nil
+				}
+				tree, err := pool.Parse("java", source)
+				if err != nil {
+					return nil
+				}
+				defer tree.Close()
+				if collectFileSubResourceLocators(tree.RootNode(), source, ctx) {
+					changed = true
+				}
+				return nil
+			})
+		}
+	}
+}
+
+func collectFileSubResourceLocators(root *tree_sitter.Node, source []byte, ctx *extractContext) bool {
+	changed := false
+	for i := uint(0); i < root.ChildCount(); i++ {
+		child := root.Child(i)
+		if child.Kind() == "class_declaration" {
+			if collectClassSubResourceLocators(child, source, ctx) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func collectClassSubResourceLocators(classNode *tree_sitter.Node, source []byte, ctx *extractContext) bool {
+	framework, basePath, _, hidden, _ := analyzeClassAnnotations(classNode, source, ctx.constants)
+	if framework != "jaxrs" || hidden {
+		return false
+	}
+	className := extractClassName(classNode, source)
+	if className == "" {
+		return false
+	}
+	basePaths := []string{basePath}
+	if appBases := ctx.resourceBasePaths[className]; len(appBases) > 0 {
+		basePaths = nil
+		for _, appBase := range appBases {
+			basePaths = append(basePaths, joinPaths(appBase, basePath))
+		}
+	}
+	superClass := extractSuperClassName(classNode, source)
+	if superClass != "" {
+		if parentPath, ok := ctx.classPaths[superClass]; ok {
+			for i, base := range basePaths {
+				basePaths[i] = joinPaths(parentPath, base)
+			}
+		}
+	}
+	classBody := findChildKind(classNode, "class_body")
+	if classBody == nil {
+		return false
+	}
+	changed := false
+	for i := uint(0); i < classBody.ChildCount(); i++ {
+		method := classBody.Child(i)
+		if method.Kind() != "method_declaration" {
+			continue
+		}
+		locatorPath, returnType := analyzeJaxRsSubResourceLocator(method, source, ctx.constants)
+		if locatorPath == "" || returnType == "" {
+			continue
+		}
+		for _, base := range basePaths {
+			full := joinPaths(base, locatorPath)
+			before := len(ctx.resourceBasePaths[returnType])
+			ctx.resourceBasePaths[returnType] = appendUniqueString(ctx.resourceBasePaths[returnType], full)
+			if len(ctx.resourceBasePaths[returnType]) != before {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func analyzeJaxRsSubResourceLocator(methodNode *tree_sitter.Node, source []byte, constants map[string]string) (string, string) {
+	var path, httpMethod, returnType string
+	for i := uint(0); i < methodNode.ChildCount(); i++ {
+		child := methodNode.Child(i)
+		switch child.Kind() {
+		case "modifiers":
+			for j := uint(0); j < child.ChildCount(); j++ {
+				annName, annArgs := extractAnnotation(child.Child(j), source)
+				httpMethod, path = analyzeJaxRsMethodAnnotation(annName, annArgs, source, httpMethod, path, constants)
+			}
+		case "type_identifier", "generic_type":
+			if returnType == "" {
+				returnType = child.Utf8Text(source)
+				if idx := strings.Index(returnType, "<"); idx >= 0 {
+					returnType = returnType[:idx]
+				}
+			}
+		}
+	}
+	if httpMethod != "" {
+		return "", ""
+	}
+	return path, returnType
+}
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 // findChildKind returns the first direct child of node with the given kind, or nil.
@@ -866,20 +999,20 @@ func extractExceptionMapperStatus(classNode *tree_sitter.Node, source []byte, ex
 // inferResponseStatusFromBody infers an HTTP status code from JAX-RS Response builder patterns.
 func inferResponseStatusFromBody(bodyText string) int {
 	statusPatterns := map[string]int{
-		"Response.status(Response.Status.NOT_FOUND)":            404,
-		"Response.status(404)":                                  404,
-		"Response.status(Response.Status.BAD_REQUEST)":          400,
-		"Response.status(400)":                                  400,
-		"Response.status(Response.Status.CONFLICT)":             409,
-		"Response.status(409)":                                  409,
-		"Response.status(Response.Status.FORBIDDEN)":            403,
-		"Response.status(403)":                                  403,
-		"Response.status(Response.Status.UNAUTHORIZED)":         401,
-		"Response.status(401)":                                  401,
+		"Response.status(Response.Status.NOT_FOUND)":             404,
+		"Response.status(404)":                                   404,
+		"Response.status(Response.Status.BAD_REQUEST)":           400,
+		"Response.status(400)":                                   400,
+		"Response.status(Response.Status.CONFLICT)":              409,
+		"Response.status(409)":                                   409,
+		"Response.status(Response.Status.FORBIDDEN)":             403,
+		"Response.status(403)":                                   403,
+		"Response.status(Response.Status.UNAUTHORIZED)":          401,
+		"Response.status(401)":                                   401,
 		"Response.status(Response.Status.INTERNAL_SERVER_ERROR)": 500,
-		"Response.status(500)":                                  500,
-		"Response.status(Response.Status.SERVICE_UNAVAILABLE)":  503,
-		"Response.status(503)":                                  503,
+		"Response.status(500)":                                   500,
+		"Response.status(Response.Status.SERVICE_UNAVAILABLE)":   503,
+		"Response.status(503)":                                   503,
 	}
 	for pattern, code := range statusPatterns {
 		if strings.Contains(bodyText, pattern) {
@@ -893,19 +1026,12 @@ func inferResponseStatusFromBody(bodyText string) int {
 func extractClassOperations(classNode *tree_sitter.Node, source []byte, filePath string, ctx *extractContext) []*Operation {
 	// Determine framework and base path from class-level annotations
 	framework, basePath, classTags, classHidden, classSec := analyzeClassAnnotations(classNode, source, ctx.constants)
+	className := extractClassName(classNode, source)
+	if framework == "" && len(ctx.resourceBasePaths[className]) > 0 {
+		framework = "jaxrs"
+	}
 	if framework == "" || classHidden {
 		return nil
-	}
-
-	// For JAX-RS resources registered through the Atlas plugin lifecycle
-	// (via `new RestDeployment("/base", AppClass.class)` in a Plugin/Module class),
-	// the resource's own @Path is usually "" or a leaf fragment. Prepend the
-	// Application's registered base path when we know about it.
-	if framework == "jaxrs" {
-		className := extractClassName(classNode, source)
-		if appBase, ok := ctx.resourceBasePaths[className]; ok && appBase != "" {
-			basePath = joinPaths(appBase, basePath)
-		}
 	}
 
 	// Check for parent class base path (C3: inheritance)
@@ -913,6 +1039,15 @@ func extractClassOperations(classNode *tree_sitter.Node, source []byte, filePath
 	if superClass != "" {
 		if parentPath, ok := ctx.classPaths[superClass]; ok {
 			basePath = joinPaths(parentPath, basePath)
+		}
+	}
+	basePaths := []string{basePath}
+	if framework == "jaxrs" {
+		if appBases := ctx.resourceBasePaths[className]; len(appBases) > 0 {
+			basePaths = nil
+			for _, appBase := range appBases {
+				basePaths = append(basePaths, joinPaths(appBase, basePath))
+			}
 		}
 	}
 
@@ -942,14 +1077,16 @@ func extractClassOperations(classNode *tree_sitter.Node, source []byte, filePath
 			continue
 		}
 
-		op := extractMethodOperation(child, source, basePath, framework, classTags, classSec, ctx)
-		if op != nil {
-			op.File = filePath
-			// Phase 5: Inject base class pagination params for list endpoints
-			if len(baseClassParamSet) > 0 && isListEndpoint(op) {
-				op.Parameters = injectBaseClassParams(op.Parameters, baseClassParamSet)
+		for _, effectiveBasePath := range basePaths {
+			op := extractMethodOperation(child, source, effectiveBasePath, framework, classTags, classSec, ctx)
+			if op != nil {
+				op.File = filePath
+				// Phase 5: Inject base class pagination params for list endpoints
+				if len(baseClassParamSet) > 0 && isListEndpoint(op) {
+					op.Parameters = injectBaseClassParams(op.Parameters, baseClassParamSet)
+				}
+				ops = append(ops, op)
 			}
-			ops = append(ops, op)
 		}
 	}
 
@@ -2554,11 +2691,12 @@ func extractMappingPathFromString(args string, constants map[string]string) stri
 		return ""
 	}
 
-	// Simple path: ("/path")
-	if strings.HasPrefix(args, "\"") && !strings.Contains(args, "=") {
+	// Simple path: ("/path"). Query strings can contain '=', so only
+	// require that the annotation argument itself is a quoted literal.
+	if strings.HasPrefix(args, "\"") && strings.HasSuffix(args, "\"") {
 		result := stripJavaQuotes(args)
 		if result != "" {
-			return result
+			return stripMappingQuery(result)
 		}
 	}
 
@@ -2571,13 +2709,13 @@ func extractMappingPathFromString(args string, constants map[string]string) stri
 				// Try as literal
 				stripped := stripJavaQuotes(val)
 				if stripped != val {
-					return stripped
+					return stripMappingQuery(stripped)
 				}
 				// Try constant resolution
 				if constants != nil {
-					return resolveAnnotationValue(val, constants)
+					return stripMappingQuery(resolveAnnotationValue(val, constants))
 				}
-				return val
+				return stripMappingQuery(val)
 			}
 		}
 	}
@@ -2586,11 +2724,21 @@ func extractMappingPathFromString(args string, constants map[string]string) stri
 	if constants != nil && !strings.Contains(args, "=") {
 		resolved := resolveAnnotationValue(args, constants)
 		if resolved != args {
-			return resolved
+			return stripMappingQuery(resolved)
 		}
 	}
 
 	return ""
+}
+
+func stripMappingQuery(path string) string {
+	if idx := strings.Index(path, "?"); idx >= 0 {
+		path = path[:idx]
+	}
+	if path == "" {
+		return ""
+	}
+	return path
 }
 
 func extractRequestMappingMethod(args string) string {

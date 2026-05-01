@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sailpoint-oss/cartographer/extract/csharpextract"
 	"github.com/sailpoint-oss/cartographer/extract/goextract"
 	"github.com/sailpoint-oss/cartographer/extract/javaextract"
 	"github.com/sailpoint-oss/cartographer/extract/pythonextract"
@@ -107,9 +108,9 @@ func Extract(opts Options) (*Result, error) {
 	case "python", "py":
 		return doPythonExtract(opts)
 	case "csharp", "cs", "dotnet":
-		return nil, fmt.Errorf("%w: cartographer cannot yet extract from %s services (root=%s)", ErrLanguageUnsupported, opts.Lang, opts.RootDir)
+		return doCSharpExtract(opts)
 	default:
-		return nil, fmt.Errorf("unsupported language: %s (supported: go, java, typescript, python)", opts.Lang)
+		return nil, fmt.Errorf("unsupported language: %s (supported: go, java, typescript, python, csharp)", opts.Lang)
 	}
 }
 
@@ -124,9 +125,31 @@ func InferTemplate(lang string) string {
 		return "saas-atlasjs"
 	case "python", "py":
 		return "atlas-python"
+	case "csharp", "cs", "dotnet":
+		return "atlas-csharp"
 	default:
 		return ""
 	}
+}
+
+// FindCSharpSourceDirs finds conventional C# source directories.
+func FindCSharpSourceDirs(root string) []string {
+	candidates := []string{
+		filepath.Join(root, "src"),
+		filepath.Join(root, "Source"),
+		filepath.Join(root, "source"),
+	}
+	var found []string
+	for _, dir := range candidates {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			found = append(found, dir)
+			break
+		}
+	}
+	if len(found) == 0 {
+		found = append(found, root)
+	}
+	return found
 }
 
 // FindJavaSourceDirs finds conventional Java source directories in a project.
@@ -408,6 +431,32 @@ func doPythonExtract(opts Options) (*Result, error) {
 		SpecMap:    specMap,
 		Operations: len(result.Operations),
 		Types:      len(result.Types),
+		Source:     SourceExtracted,
+	}, nil
+}
+
+func doCSharpExtract(opts Options) (*Result, error) {
+	sourceDirs := FindCSharpSourceDirs(opts.RootDir)
+	result, err := csharpextract.Extract(csharpextract.Config{
+		RootDir:    opts.RootDir,
+		SourceDirs: sourceDirs,
+		Verbose:    opts.Verbose,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("csharp extraction: %w", err)
+	}
+	specMap := csharpextract.GenerateSpec(result, csharpextract.SpecConfig{
+		Title:           opts.Title,
+		Version:         opts.Version,
+		Description:     opts.Description,
+		OpenAPIVersion:  "3.2",
+		ServiceTemplate: opts.Template,
+		TreeShake:       true,
+	})
+	return &Result{
+		SpecMap:    specMap,
+		Operations: len(result.Operations),
+		Types:      len(result.Schemas),
 		Source:     SourceExtracted,
 	}, nil
 }

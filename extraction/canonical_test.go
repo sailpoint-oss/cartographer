@@ -412,17 +412,34 @@ func assertNoExternalRefs(t *testing.T, node interface{}, path string) {
 	}
 }
 
-func TestExtract_CSharpReturnsUnsupportedError(t *testing.T) {
+func TestExtract_CSharpMinimalAPISucceeds(t *testing.T) {
 	root := t.TempDir()
-	_, err := Extract(Options{
+	srcDir := filepath.Join(root, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "ItemsEndpoint.cs"), []byte(`
+public static class ItemsEndpoint {
+  public static void Map(WebApplication app) {
+    var items = app.MapGroup("items");
+    items.MapGet("", (int limit) => TypedResults.Ok(new ItemInfo()));
+  }
+}
+public class ItemInfo { public string Id { get; set; } }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Extract(Options{
 		Lang:    "csharp",
 		RootDir: root,
+		Title:   "Example API",
+		Version: "1.0.0",
 	})
-	if err == nil {
-		t.Fatal("expected error for csharp")
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
 	}
-	if !isUnsupportedLanguageError(err) {
-		t.Fatalf("expected ErrLanguageUnsupported wrapper, got %v", err)
+	if result.Operations != 1 {
+		t.Fatalf("Operations = %d, want 1", result.Operations)
 	}
 }
 

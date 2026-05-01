@@ -686,6 +686,8 @@ func TestExtractMappingPathFromString(t *testing.T) {
 		{`(path = "/users")`, "/users"},
 		{`(value = "/users")`, "/users"},
 		{`(value = "/users", method = RequestMethod.GET)`, "/users"},
+		{`("/session/start?tenant=")`, "/session/start"},
+		{`(value = "/session/start?tenant=", method = RequestMethod.GET)`, "/session/start"},
 		{`()`, ""},
 		{``, ""},
 	}
@@ -694,6 +696,196 @@ func TestExtractMappingPathFromString(t *testing.T) {
 		got := extractMappingPathFromString(tt.input, nil)
 		if got != tt.expected {
 			t.Errorf("extractMappingPathFromString(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestJaxRsMultipleDeploymentsEmitAllMounts(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "com", "example")
+	writeTestFile(t, pkg, "Plugin.java", `package com.example;
+
+public class Plugin {
+    public void configure() {
+        new RestDeployment("/preview/items", VersionedApplication.class);
+        new RestDeployment("/stable/items", VersionedApplication.class);
+    }
+}
+`)
+	writeTestFile(t, pkg, "VersionedApplication.java", `package com.example;
+
+public class VersionedApplication {
+    public VersionedApplication() {
+        add(PrimaryResource.class);
+    }
+}
+`)
+	writeTestFile(t, pkg, "PrimaryResource.java", `package com.example;
+
+import javax.ws.rs.*;
+
+@Path("")
+public class PrimaryResource {
+    @GET
+    public String list() { return ""; }
+
+    @GET
+    @Path("{id}")
+    public String get(@PathParam("id") String id) { return ""; }
+}
+`)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+	want := map[string]bool{
+		"/preview/items":      false,
+		"/preview/items/{id}": false,
+		"/stable/items":       false,
+		"/stable/items/{id}":  false,
+	}
+	for _, op := range result.Operations {
+		if _, ok := want[op.Path]; ok {
+			want[op.Path] = true
+		}
+	}
+	for path, saw := range want {
+		if !saw {
+			t.Fatalf("expected extracted operation for %s, got %#v", path, result.Operations)
+		}
+	}
+}
+
+func TestJaxRsSubResourceLocatorInheritsParentPath(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "com", "example")
+	writeTestFile(t, pkg, "Plugin.java", `package com.example;
+
+public class Plugin {
+    public void configure() {
+        new RestDeployment("/api/root", RootApplication.class);
+    }
+}
+`)
+	writeTestFile(t, pkg, "RootApplication.java", `package com.example;
+
+public class RootApplication {
+    public RootApplication() {
+        add(ParentResource.class);
+    }
+}
+`)
+	writeTestFile(t, pkg, "ParentResource.java", `package com.example;
+
+import javax.ws.rs.*;
+
+@Path("parents")
+public class ParentResource {
+    @Path("{id}/children")
+    public NestedResource children(@PathParam("id") String id) {
+        return new NestedResource();
+    }
+}
+`)
+	writeTestFile(t, pkg, "NestedResource.java", `package com.example;
+
+import javax.ws.rs.*;
+
+public class NestedResource {
+    @GET
+    @Path("items")
+    public String items() { return ""; }
+}
+`)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+	for _, op := range result.Operations {
+		if op.Method == "GET" && op.Path == "/api/root/parents/{id}/children/items" {
+			return
+		}
+	}
+	t.Fatalf("expected sub-resource operation under parent path, got %#v", result.Operations)
+}
+
+func TestJaxRsSubResourceLocatorExtractsNestedResourceShape(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "com", "example")
+	writeTestFile(t, pkg, "Plugin.java", `package com.example;
+
+public class Plugin {
+    public void configure() {
+        new RestDeployment("/v3/parents", ParentsApplication.class);
+    }
+}
+`)
+	writeTestFile(t, pkg, "ParentsApplication.java", `package com.example;
+
+public class ParentsApplication {
+    public ParentsApplication() {
+        add(ParentsResource.class);
+    }
+}
+`)
+	writeTestFile(t, pkg, "ParentsResource.java", `package com.example;
+
+import javax.ws.rs.*;
+
+@Path("parents")
+public class ParentsResource {
+    @Path("{id}/children")
+    public ChildrenResource children(@PathParam("id") String parentId) {
+        return new ChildrenResource();
+    }
+}
+`)
+	writeTestFile(t, pkg, "ChildrenResource.java", `package com.example;
+
+import javax.ws.rs.*;
+
+public class ChildrenResource {
+    @GET
+    @Path("items")
+    public Object listItems() { return null; }
+
+    @POST
+    @Path("items")
+    public Object createItem(Object body) { return null; }
+
+    @GET
+    @Path("widgets")
+    public Object listWidgets() { return null; }
+
+    @POST
+    @Path("widgets")
+    public Object createWidget(Object body) { return null; }
+
+    @GET
+    @Path("{childId}")
+    public Object getChild(@PathParam("childId") String childId) { return null; }
+}
+`)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+	got := make(map[string]bool)
+	for _, op := range result.Operations {
+		got[op.Method+" "+op.Path] = true
+	}
+	for _, want := range []string{
+		"GET /v3/parents/parents/{id}/children/items",
+		"POST /v3/parents/parents/{id}/children/items",
+		"GET /v3/parents/parents/{id}/children/widgets",
+		"POST /v3/parents/parents/{id}/children/widgets",
+		"GET /v3/parents/parents/{id}/children/{childId}",
+	} {
+		if !got[want] {
+			t.Fatalf("missing %s from nested subresource extraction; got %#v", want, got)
 		}
 	}
 }
@@ -1744,27 +1936,27 @@ public class ThingDTO {
 func TestJsonPropertyReadWriteOnly(t *testing.T) {
 	src := `package com.example;
 @RestController
-@RequestMapping("/api/v1/accounts")
-public class AccountController {
+@RequestMapping("/api/v1/items")
+public class ItemController {
     @GetMapping("/{id}")
-    public AccountDTO get(@PathVariable("id") String id) { return null; }
+    public ItemDTO get(@PathVariable("id") String id) { return null; }
 }
 
-public class AccountDTO {
+public class ItemDTO {
     private String name;
 
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private String createdAt;
 
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
-    private String password;
+    private String writeOnlyValue;
 }`
 
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "src", "AccountController.java"), []byte(src), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "src", "ItemController.java"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1773,10 +1965,10 @@ public class AccountDTO {
 		t.Fatal(err)
 	}
 
-	spec := GenerateSpec(result, SpecConfig{Title: "Accounts", Version: "1.0.0"})
+	spec := GenerateSpec(result, SpecConfig{Title: "Items", Version: "1.0.0"})
 	components := spec["components"].(map[string]interface{})
 	schemas := components["schemas"].(map[string]interface{})
-	dto := schemas["AccountDTO"].(map[string]interface{})
+	dto := schemas["ItemDTO"].(map[string]interface{})
 	props := dto["properties"].(map[string]interface{})
 
 	createdAt := props["createdAt"].(map[string]interface{})
@@ -1784,9 +1976,9 @@ public class AccountDTO {
 		t.Error("createdAt should be readOnly")
 	}
 
-	password := props["password"].(map[string]interface{})
-	if password["writeOnly"] != true {
-		t.Error("password should be writeOnly")
+	writeOnlyValue := props["writeOnlyValue"].(map[string]interface{})
+	if writeOnlyValue["writeOnly"] != true {
+		t.Error("writeOnlyValue should be writeOnly")
 	}
 }
 
@@ -3814,43 +4006,43 @@ func keysOfMap(m map[string]interface{}) []string {
 	return keys
 }
 
-// --- Plugin-registered JAX-RS (Atlas RestDeployment) ---
+// --- Plugin-registered JAX-RS (abstract RestDeployment-style fixture) ---
 
 const atlasPluginSource = `package com.example.api;
 
-import com.sailpoint.atlas.plugin.AtlasPlugin;
-import com.sailpoint.atlas.plugin.PluginConfigurationContext;
-import com.sailpoint.atlas.plugin.PluginDeploymentContext;
-import com.sailpoint.atlas.rest.RestConfig;
-import com.sailpoint.atlas.rest.RestDeployment;
+import com.example.framework.Plugin;
+import com.example.framework.PluginConfigurationContext;
+import com.example.framework.PluginDeploymentContext;
+import com.example.framework.RestConfig;
+import com.example.framework.RestDeployment;
 
-public class MachineIdentityServicePlugin implements AtlasPlugin {
+public class ExampleServicePlugin implements Plugin {
     @Override
     public void configure(PluginConfigurationContext context) {}
 
     @Override
     public void deploy(PluginDeploymentContext context) {
         RestConfig restConfig = context.getInstance(RestConfig.class);
-        restConfig.addDeployment(new RestDeployment("/beta/machine-accounts", MachineAccountsRestApplication.class));
-        restConfig.addDeployment(new RestDeployment("/beta/accounts", AccountsRestApplication.class));
+        restConfig.addDeployment(new RestDeployment("/beta/primary-resources", PrimaryRestApplication.class));
+        restConfig.addDeployment(new RestDeployment("/beta/secondary-resources", SecondaryRestApplication.class));
     }
 }
 `
 
 const atlasApplicationSource = `package com.example.api;
 
-public class MachineAccountsRestApplication extends MisRestApplication {
-    public MachineAccountsRestApplication() {
-        add(MachineAccountsResource.class);
+public class PrimaryRestApplication extends ExampleRestApplication {
+    public PrimaryRestApplication() {
+        add(PrimaryResource.class);
     }
 }
 `
 
 const atlasApplication2Source = `package com.example.api;
 
-public class AccountsRestApplication extends MisRestApplication {
-    public AccountsRestApplication() {
-        add(RecommendationsResource.class);
+public class SecondaryRestApplication extends ExampleRestApplication {
+    public SecondaryRestApplication() {
+        add(RelatedResource.class);
     }
 }
 `
@@ -3864,21 +4056,21 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
 
 @Path("")
-public class MachineAccountsResource {
+public class PrimaryResource {
 
     @GET
-    public Object listAccounts(@QueryParam("limit") int limit) {
+    public Object listResources(@QueryParam("limit") int limit) {
         return null;
     }
 
     @GET
-    @Path("/{accountId}")
-    public Object getAccount(@PathParam("accountId") String accountId) {
+    @Path("/{resourceId}")
+    public Object getResource(@PathParam("resourceId") String resourceId) {
         return null;
     }
 
     @POST
-    public Object createAccount(Object body) {
+    public Object createResource(Object body) {
         return null;
     }
 }
@@ -3889,28 +4081,28 @@ const atlasResource2Source = `package com.example.api;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 
-@Path("/recommendations")
-public class RecommendationsResource {
+@Path("/related-items")
+public class RelatedResource {
 
     @GET
-    public Object getRecommendations() {
+    public Object getRelatedItems() {
         return null;
     }
 }
 `
 
 // TestRestDeploymentBasePath verifies that JAX-RS resources registered through
-// the Atlas plugin lifecycle (via `new RestDeployment("/base", AppClass.class)`)
+// a plugin lifecycle (via `new RestDeployment("/base", AppClass.class)`)
 // pick up the Application's base path when the resource's own @Path is empty
 // or a bare fragment.
 func TestRestDeploymentBasePath(t *testing.T) {
 	dir := t.TempDir()
 	pkg := filepath.Join(dir, "src", "main", "java", "com", "example", "api")
-	writeTestFile(t, pkg, "MachineIdentityServicePlugin.java", atlasPluginSource)
-	writeTestFile(t, pkg, "MachineAccountsRestApplication.java", atlasApplicationSource)
-	writeTestFile(t, pkg, "AccountsRestApplication.java", atlasApplication2Source)
-	writeTestFile(t, pkg, "MachineAccountsResource.java", atlasResourceSource)
-	writeTestFile(t, pkg, "RecommendationsResource.java", atlasResource2Source)
+	writeTestFile(t, pkg, "ExampleServicePlugin.java", atlasPluginSource)
+	writeTestFile(t, pkg, "PrimaryRestApplication.java", atlasApplicationSource)
+	writeTestFile(t, pkg, "SecondaryRestApplication.java", atlasApplication2Source)
+	writeTestFile(t, pkg, "PrimaryResource.java", atlasResourceSource)
+	writeTestFile(t, pkg, "RelatedResource.java", atlasResource2Source)
 
 	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
 	if err != nil {
@@ -3923,10 +4115,10 @@ func TestRestDeploymentBasePath(t *testing.T) {
 	}
 
 	want := []string{
-		"GET /beta/machine-accounts",
-		"GET /beta/machine-accounts/{accountId}",
-		"POST /beta/machine-accounts",
-		"GET /beta/accounts/recommendations",
+		"GET /beta/primary-resources",
+		"GET /beta/primary-resources/{resourceId}",
+		"POST /beta/primary-resources",
+		"GET /beta/secondary-resources/related-items",
 	}
 	for _, key := range want {
 		if _, ok := got[key]; !ok {
@@ -3935,7 +4127,7 @@ func TestRestDeploymentBasePath(t *testing.T) {
 	}
 
 	for key := range got {
-		if key == "GET /{accountId}" || key == "GET " || key == "POST " {
+		if key == "GET /{resourceId}" || key == "GET " || key == "POST " {
 			t.Errorf("operation %q kept its naked resource path instead of inheriting RestDeployment base", key)
 		}
 	}
