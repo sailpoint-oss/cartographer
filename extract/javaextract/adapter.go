@@ -1,8 +1,40 @@
 package javaextract
 
 import (
+	"strings"
+
 	"github.com/sailpoint-oss/cartographer/extract/specmodel"
 )
+
+// filterValidScopes removes annotation text that leaks through as scope strings.
+// Valid scopes are plain identifiers or colon-delimited tokens (e.g. "read:users",
+// "ROLE_ADMIN"). Invalid patterns include Java annotation fragments containing
+// assignment operators, constructor calls, or quote characters.
+func filterValidScopes(scopes []string) []string {
+	var valid []string
+	for _, s := range scopes {
+		if isValidScope(s) {
+			valid = append(valid, s)
+		}
+	}
+	return valid
+}
+
+func isValidScope(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, " = ") || strings.Contains(s, "=") && !strings.HasPrefix(s, "ROLE_") {
+		return false
+	}
+	if strings.Contains(s, "new ") || strings.Contains(s, "()") || strings.Contains(s, "{}") {
+		return false
+	}
+	if strings.Contains(s, "\"") || strings.Contains(s, "'") {
+		return false
+	}
+	return true
+}
 
 // ToUnifiedResult converts a Java extraction Result into the unified specmodel.Result.
 func (r *Result) ToUnifiedResult() *specmodel.Result {
@@ -30,8 +62,11 @@ func convertJavaOperation(op *Operation) *specmodel.Operation {
 
 	var security []specmodel.SecurityRequirement
 	if len(op.Security) > 0 {
-		security = []specmodel.SecurityRequirement{
-			{Scheme: "oauth2", Scopes: op.Security},
+		filtered := filterValidScopes(op.Security)
+		if len(filtered) > 0 {
+			security = []specmodel.SecurityRequirement{
+				{Scheme: "oauth2", Scopes: filtered},
+			}
 		}
 	}
 

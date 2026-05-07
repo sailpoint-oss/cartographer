@@ -26,6 +26,15 @@ func normalizeOpenAPIPath(path string) string {
 	if path == "" {
 		return ""
 	}
+
+	// Strip quote characters that leak from annotation values (e.g. @RequestMapping)
+	path = strings.ReplaceAll(path, "\"", "")
+
+	// Fix paths starting with /{" or {"  from corrupted annotations
+	if strings.HasPrefix(path, "/{") && !strings.Contains(path[:min(4, len(path))], "}") {
+		path = "/" + strings.TrimPrefix(path, "/{")
+	}
+
 	if !strings.HasPrefix(path, "/") {
 		return "/" + path
 	}
@@ -63,6 +72,8 @@ func GenerateSpec(result *specmodel.Result, cfg specmodel.SpecConfig, adapter La
 	if tags := buildTopLevelTags(result); len(tags) > 0 {
 		spec["tags"] = tags
 	}
+
+	EnsureSchemaRefsExist(spec)
 
 	if cfg.TreeShake {
 		TreeShake(spec)
@@ -405,7 +416,14 @@ func buildResponses(op *specmodel.Operation, result *specmodel.Result) map[strin
 			// Strip writeOnly properties from response schemas
 			schema = stripWriteOnlyProps(schema)
 			if op.NullableResponse {
-				schema["nullable"] = true
+				if _, hasRef := schema["$ref"]; hasRef {
+					schema = map[string]any{
+						"allOf":    []any{map[string]any{"$ref": schema["$ref"]}},
+						"nullable": true,
+					}
+				} else {
+					schema["nullable"] = true
+				}
 			}
 			contentType := "application/json"
 			if op.ProducesContentType != "" {
@@ -543,19 +561,35 @@ func buildComponents(result *specmodel.Result, adapter LanguageAdapter) map[stri
 		if schema, ok := result.Schemas[name]; ok {
 			schemas[name] = schema
 		} else if _, ok := result.Types[name]; ok {
-			// Fallback: type exists but no pre-computed schema
 			schemas[name] = GenerateStubSchema(name)
+		} else if baseSchema := lookupBaseTypeName(name, result.Schemas); baseSchema != nil {
+			// Normalized generic name (e.g. "AttributesStringObject") may not
+			// match the schema key (e.g. "Attributes"). Try base type lookup.
+			schemas[name] = baseSchema
 		} else {
 			schemas[name] = GenerateStubSchema(name)
 		}
 	}
 
-	// $ref isolation: per OpenAPI spec, $ref must be alone in a schema object.
-	// Strip extra keys from any schema that contains $ref alongside other properties.
+	// $ref isolation: per OpenAPI 3.0.x, $ref must be alone in a schema object.
+	// Wrap $ref + sibling keywords in allOf to preserve both the reference and
+	// the additional constraints (nullable, description, etc.).
 	for name, raw := range schemas {
 		if m, ok := raw.(map[string]any); ok {
 			if ref, hasRef := m["$ref"]; hasRef && len(m) > 1 {
-				schemas[name] = map[string]any{"$ref": ref}
+				siblings := make(map[string]any)
+				for k, v := range m {
+					if k != "$ref" {
+						siblings[k] = v
+					}
+				}
+				wrapped := map[string]any{
+					"allOf": []any{map[string]any{"$ref": ref}},
+				}
+				for k, v := range siblings {
+					wrapped[k] = v
+				}
+				schemas[name] = wrapped
 			}
 		}
 	}
@@ -595,7 +629,8 @@ func buildComponents(result *specmodel.Result, adapter LanguageAdapter) map[stri
 	return components
 }
 
-// collectReferencedTypes gathers all type names referenced by operations.
+// collectReferencedTypes gathers all type names referenced by operations,
+// then walks pre-computed schemas transitively to capture nested $ref targets.
 func collectReferencedTypes(result *specmodel.Result, adapter LanguageAdapter) map[string]bool {
 	refs := make(map[string]bool)
 
@@ -621,6 +656,32 @@ func collectReferencedTypes(result *specmodel.Result, adapter LanguageAdapter) m
 		for _, ar := range op.AnnotatedResponses {
 			if ar.SchemaType != "" {
 				generics.Parse(ar.SchemaType).CollectTypeRefs(refs)
+			}
+		}
+	}
+
+	// Walk pre-computed schemas transitively: schemas may contain $ref to other
+	// schemas that aren't directly referenced by operations.
+	const prefix = "#/components/schemas/"
+	changed := true
+	for changed {
+		changed = false
+		for name := range refs {
+			schema, ok := result.Schemas[name]
+			if !ok {
+				continue
+			}
+			innerRefs := make(map[string]bool)
+			CollectRefs(schema, innerRefs)
+			for ref := range innerRefs {
+				if !strings.HasPrefix(ref, prefix) {
+					continue
+				}
+				target := strings.TrimPrefix(ref, prefix)
+				if target != "" && !refs[target] {
+					refs[target] = true
+					changed = true
+				}
 			}
 		}
 	}
@@ -668,9 +729,14 @@ func applyParamDefault(schema map[string]any, p *specmodel.Parameter) {
 	if p.DefaultValue == "" {
 		return
 	}
+
+	// Filter out Java constructor expressions that leak through annotation parsing
+	if isJavaConstructorDefault(p.DefaultValue) {
+		return
+	}
+
 	switch schema["type"] {
 	case "integer", "number":
-		// Try integer first (preferred for whole numbers), fall back to float
 		if n, err := strconv.Atoi(p.DefaultValue); err == nil {
 			schema["default"] = n
 		} else if f, err := strconv.ParseFloat(p.DefaultValue, 64); err == nil {
@@ -683,6 +749,14 @@ func applyParamDefault(schema map[string]any, p *specmodel.Parameter) {
 	default:
 		schema["default"] = p.DefaultValue
 	}
+}
+
+// isJavaConstructorDefault returns true if the value looks like a Java constructor
+// expression rather than a real default value (e.g. "new HashSet<>()", "new ArrayList<>()").
+func isJavaConstructorDefault(val string) bool {
+	return strings.HasPrefix(val, "new ") ||
+		strings.Contains(val, "()") ||
+		strings.Contains(val, "<>")
 }
 
 // stripReadOnlyProps returns a shallow copy of the schema with readOnly
@@ -836,4 +910,34 @@ func stripWriteOnlyProps(schema map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+// lookupBaseTypeName attempts to find a schema by stripping generic suffixes from
+// normalized names. For example, "AttributesStringObject" might match a schema
+// stored as "Attributes" if the suffix consists entirely of known primitive names.
+func lookupBaseTypeName(normalizedName string, schemas map[string]any) map[string]any {
+	knownSuffixes := []string{
+		"String", "Object", "Integer", "Long", "Boolean",
+		"Double", "Float", "Short", "Byte",
+	}
+	candidate := normalizedName
+	for {
+		found := false
+		for _, suffix := range knownSuffixes {
+			if strings.HasSuffix(candidate, suffix) && len(candidate) > len(suffix) {
+				candidate = candidate[:len(candidate)-len(suffix)]
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+		if schema, ok := schemas[candidate]; ok {
+			if m, mOK := schema.(map[string]any); mOK {
+				return m
+			}
+		}
+	}
+	return nil
 }

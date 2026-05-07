@@ -86,7 +86,9 @@ func (a *javaAdapter) BuildSecuritySchemes(result *specmodel.Result) map[string]
 		for _, sec := range op.Security {
 			if sec.Scheme == "oauth2" {
 				for _, s := range sec.Scopes {
-					allScopes[s] = true
+					if isValidScope(s) {
+						allScopes[s] = true
+					}
 				}
 			}
 		}
