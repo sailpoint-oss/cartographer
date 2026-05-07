@@ -1,5 +1,14 @@
 components:
     schemas:
+        BaseResource:
+            properties:
+                created:
+                    type: string
+                id:
+                    type: string
+                modified:
+                    type: string
+            type: object
         ErrorResponse:
             properties:
                 detailCode:
