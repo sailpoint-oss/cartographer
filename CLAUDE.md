@@ -56,10 +56,15 @@ go work use ../navigator ../barrelman
 | `extraction/` | Stable extraction API used by Cartographer and downstream callers |
 | `extract/` | Language-specific extractors |
 | `extract/goextract/` | Go extraction via `go/ast` + `go/types` |
-| `extract/javaextract/` | Java extraction via tree-sitter |
+| `extract/javaextract/` | Java extraction via tree-sitter (Spring MVC, JAX-RS, interface/nested controllers) |
 | `extract/tsextract/` | TypeScript extraction via tree-sitter |
+| `extract/pythonextract/` | Python extraction (FastAPI / Flask-style routes) |
+| `extract/csharpextract/` | C# extraction (minimal APIs / MVC controllers) |
+| `extract/extractionopts/` | Shared code-derived extraction options |
+| `extract/sharedspec/` | Cross-language OpenAPI assembly |
 | `extract/parser/` | Tree-sitter query files |
 | `extract/specgen/` | OpenAPI spec generation from extracted route/schema data |
+| `extraction/canonical.go` | In-repo OpenAPI/Swagger passthrough |
 
 ### Key configuration
 

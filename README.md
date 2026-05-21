@@ -1,6 +1,6 @@
 # Cartographer
 
-Cartographer extracts OpenAPI documents from Go, Java, and TypeScript services. It is the public extraction surface in the toolchain: a CLI, a reusable Go library, and a GitHub Action for service-local generation.
+Cartographer extracts OpenAPI documents from Go, Java, TypeScript, Python, and C# services. It is the public extraction surface in the toolchain: a CLI, a reusable Go library, and a GitHub Action for service-local generation.
 
 The repository is intentionally focused on per-service extraction. Service teams decide how and where to publish the generated spec in their own repositories and CI workflows.
 
@@ -10,6 +10,7 @@ The repository is intentionally focused on per-service extraction. Service teams
 - `navigator` owns OpenAPI and Arazzo parsing, indexes, pointers, and shared document validation.
 - `barrelman` owns lint rules and diagnostic execution.
 - `cartographer` owns service-local source extraction.
+- `telescope` owns spec-side linting, LSP/editor UX, and the in-process generation loop that wraps cartographer extraction.
 - `barometer` owns runtime contract execution.
 
 ## Install
@@ -50,11 +51,36 @@ It owns:
 
 - `.cartographer/cartographer.yaml` parsing
 - language/template detection
-- single-service extraction for Go, Java, and TypeScript
+- single-service extraction for Go, Java, TypeScript, Python, and C#
+- in-repo canonical OpenAPI/Swagger passthrough when configured
 - service-local shaping such as `pathRewrites`, `excludePaths`, and `servers`
+- code-derived extraction options under `service.extraction` (error schema, signature pagination types, co-located OpenAPI merge)
 - writing the final spec document
 
 For CLI-aligned behavior from Go callers, prefer `extraction.ExtractProject(...)` and then `result.Write()`. That path resolves `--root`-style paths, loads `.cartographer/cartographer.yaml`, applies service-local shaping, and preserves the same default output behavior as `cartographer extract`.
+
+## Code-derived extraction
+
+Cartographer emits only contract detail that source code supports:
+
+- response headers from method bodies, annotations, resolved constants, and inherited helpers
+- error schemas from `@ControllerAdvice`, typed return types, and handler signatures — not blanket 400/401/403/500 stubs
+- pagination parameters from signature types and indexed DTO fields when configured — not from query-param name heuristics alone
+- RFC 7807 ProblemDetails only when source references those types
+
+Optional `service.extraction` settings opt into legacy shapes or hybrid-repo merging when needed.
+
+## Service templates
+
+Auto-detected template labels are written to `info.x-service-template`:
+
+| Language | Template |
+| --- | --- |
+| Go | `go-web` |
+| Java | `java-spring` |
+| TypeScript (NestJS) | `typescript-node` |
+| Python | `python-fastapi` |
+| C# | `csharp-web` |
 
 ## `.cartographer/cartographer.yaml`
 
@@ -97,7 +123,7 @@ service:
 
 Extracted specs may include `info.x-cartographer-diagnostics` with controller and operation counts for triage.
 
-Supported languages: Go, Java (Spring/JAX-RS), TypeScript, Python (FastAPI), and C# (minimal APIs / MVC).
+Supported languages: Go, Java (Spring/JAX-RS), TypeScript (NestJS), Python (FastAPI), and C# (minimal APIs / MVC).
 
 ## GitHub Action
 
@@ -136,7 +162,7 @@ go test ./...
 For local multi-repo development, prefer a short-lived `go.work` instead of long-lived `replace` directives:
 
 ```bash
-go work init . ../your-consumer
+go work init . ../telescope/server
 go work use ../navigator ../barrelman
 ```
 
