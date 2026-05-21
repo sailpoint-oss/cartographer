@@ -190,7 +190,7 @@ func (ft *FunctionTracer) isWebErrorFunction(call *ast.CallExpr, info *types.Inf
 	if info != nil && info.Uses != nil {
 		if obj := info.Uses[sel.Sel]; obj != nil {
 			pkg := obj.Pkg()
-			if pkg != nil && strings.Contains(pkg.Path(), "atlas-go") && strings.HasSuffix(pkg.Path(), "/web") {
+			if pkg != nil && isFrameworkWebPackage(pkg.Path()) {
 				return ft.isKnownErrorFunction(sel.Sel.Name)
 			}
 		}
@@ -218,7 +218,7 @@ func (ft *FunctionTracer) extractErrorInfo(call *ast.CallExpr, info *types.Info)
 	errorInfo := &ErrorResponseInfo{
 		StatusCode:      statusCode,
 		ResponseType:    "web.Error",
-		ResponsePackage: "github.com/sailpoint/atlas-go/v2/atlas/web",
+		ResponsePackage: FrameworkWebPackagePath,
 		Source:          "web." + funcName,
 	}
 
@@ -277,7 +277,7 @@ func (ft *FunctionTracer) isWriteJSONCall(call *ast.CallExpr, info *types.Info) 
 	if info != nil && info.Uses != nil {
 		if obj := info.Uses[sel.Sel]; obj != nil {
 			pkg := obj.Pkg()
-			if pkg != nil && strings.Contains(pkg.Path(), "atlas-go") && strings.HasSuffix(pkg.Path(), "/web") {
+			if pkg != nil && isFrameworkWebPackage(pkg.Path()) {
 				return sel.Sel.Name == "WriteJSON"
 			}
 		}
@@ -337,8 +337,8 @@ func (ft *FunctionTracer) shouldTraceCall(call *ast.CallExpr, info *types.Info) 
 	}
 
 	// Don't trace third-party libraries (heuristic: has multiple path components)
-	// Trace only if it's from the same module or a known atlas-go package
-	return strings.Contains(pkg.Path(), "atlas-go") ||
+	// Trace helper calls from web framework packages (import path suffix /web).
+	return isFrameworkWebPackage(pkg.Path()) ||
 		!strings.Contains(pkg.Path(), "github.com")
 }
 

@@ -530,7 +530,7 @@ func TestPythonSpecGeneration(t *testing.T) {
 		Version:         "1.0.0",
 		Description:     "Test service",
 		OpenAPIVersion:  "3.2",
-		ServiceTemplate: "atlas-python",
+		ServiceTemplate: "python-fastapi",
 		TreeShake:       true,
 	})
 
@@ -544,8 +544,8 @@ func TestPythonSpecGeneration(t *testing.T) {
 	if info["title"] != "Test Service" {
 		t.Errorf("expected title=Test Service, got %v", info["title"])
 	}
-	if info["x-service-template"] != "atlas-python" {
-		t.Errorf("expected x-service-template=atlas-python, got %v", info["x-service-template"])
+	if info["x-service-template"] != "python-fastapi" {
+		t.Errorf("expected x-service-template=python-fastapi, got %v", info["x-service-template"])
 	}
 	if info["x-service-framework"] != "fastapi" {
 		t.Errorf("expected x-service-framework=fastapi, got %v", info["x-service-framework"])

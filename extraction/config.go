@@ -8,8 +8,24 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sailpoint-oss/cartographer/extract/extractionopts"
 	"gopkg.in/yaml.v3"
 )
+
+// ExtractionConfig holds code-derived extraction options (cartographer.yaml).
+type ExtractionConfig struct {
+	ErrorSchema              string   `yaml:"errorSchema,omitempty"`
+	SignaturePaginationTypes []string `yaml:"signaturePaginationTypes,omitempty"`
+	MergeCoLocatedOpenAPI    bool     `yaml:"mergeCoLocatedOpenAPI,omitempty"`
+}
+
+func (c ExtractionConfig) Options() extractionopts.Options {
+	return extractionopts.Options{
+		ErrorSchema:              c.ErrorSchema,
+		SignaturePaginationTypes: c.SignaturePaginationTypes,
+		MergeCoLocatedOpenAPI:    c.MergeCoLocatedOpenAPI,
+	}
+}
 
 // Config represents the .cartographer/cartographer.yaml schema.
 type Config struct {
@@ -18,14 +34,15 @@ type Config struct {
 
 // ServiceConfig holds per-service extraction configuration fields.
 type ServiceConfig struct {
-	Name           string        `yaml:"name"`
-	Description    string        `yaml:"description"`
-	Version        string        `yaml:"version"`
-	Team           string        `yaml:"team"`
-	Slack          string        `yaml:"slack"`
-	Language       string        `yaml:"language"`
-	Template       string        `yaml:"template"`
-	Contact        *ContactInfo  `yaml:"contact,omitempty"`
+	Name           string           `yaml:"name"`
+	Description    string           `yaml:"description"`
+	Version        string           `yaml:"version"`
+	Team           string           `yaml:"team"`
+	Slack          string           `yaml:"slack"`
+	Language       string           `yaml:"language"`
+	Template       string           `yaml:"template"`
+	Extraction     ExtractionConfig `yaml:"extraction,omitempty"`
+	Contact        *ContactInfo     `yaml:"contact,omitempty"`
 	License        *LicenseInfo  `yaml:"license,omitempty"`
 	TermsOfService string        `yaml:"termsOfService,omitempty"`
 	Servers        []Server      `yaml:"servers,omitempty"`
@@ -78,31 +95,35 @@ func ReadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
+// Auto-detected service template labels written to x-service-template.
+const (
+	TemplateGoWeb          = "go-web"
+	TemplateJavaSpring     = "java-spring"
+	TemplateTypeScriptNode = "typescript-node"
+	TemplatePythonFastAPI  = "python-fastapi"
+	TemplateCSharpWeb      = "csharp-web"
+)
+
 // DetectLanguage examines project files to determine the service language.
-// Signals are checked in a priority order that matches the most common
-// service layouts at SailPoint: Go and Java at the root, then nested Go
-// modules (e.g. pag/go/go.mod), then TypeScript (only when a NestJS
-// dependency is present to avoid false positives on docs sites), then
-// Python, then C#. C# is reported even though cartographer cannot extract
-// from it yet so we can record an explicit language-unsupported
-// status instead of silently producing zero operations.
+// Signals are checked in priority order: Go and Java at the root, nested Go
+// modules, TypeScript (NestJS dependency required), Python, then C#.
 func DetectLanguage(root string) (lang string, template string) {
 	if fileExists(filepath.Join(root, "go.mod")) {
-		return "go", "atlas-go"
+		return "go", TemplateGoWeb
 	}
 	if fileExists(filepath.Join(root, "build.gradle")) || fileExists(filepath.Join(root, "build.gradle.kts")) {
-		return "java", "atlas-boot"
+		return "java", TemplateJavaSpring
 	}
 	pkgJSON := filepath.Join(root, "package.json")
 	if fileExists(pkgJSON) && hasNestJSDependency(pkgJSON) {
-		return "typescript", "saas-atlasjs"
+		return "typescript", TemplateTypeScriptNode
 	}
 	// Nested Go modules: some repos keep the Go sources under go/ (e.g.
-	// pag/go/go.mod) with non-Go siblings at root. We only accept nested
+	// go/go.mod) with non-Go siblings at root. We only accept nested
 	// modules when the root has no other strong language signal, which
 	// the checks above already established.
 	if findNestedGoModule(root) != "" {
-		return "go", "atlas-go"
+		return "go", TemplateGoWeb
 	}
 	// Python is the final non-C# fallback: pyproject.toml is the strongest
 	// signal, setup.py / Pipfile / requirements.txt cover legacy and
@@ -112,10 +133,10 @@ func DetectLanguage(root string) (lang string, template string) {
 		fileExists(filepath.Join(root, "setup.cfg")) ||
 		fileExists(filepath.Join(root, "Pipfile")) ||
 		fileExists(filepath.Join(root, "requirements.txt")) {
-		return "python", "atlas-python"
+		return "python", TemplatePythonFastAPI
 	}
 	if fileExists(filepath.Join(root, "Directory.Build.props")) || hasCSharpProject(root) {
-		return "csharp", "atlas-csharp"
+		return "csharp", TemplateCSharpWeb
 	}
 	return "", ""
 }
@@ -148,8 +169,7 @@ func findNestedGoModule(root string) string {
 }
 
 // hasCSharpProject reports whether root contains any .csproj or .sln
-// file at depth 1 or 2. We deliberately do not walk deeper: the SailPoint
-// .NET services keep project files under src/ or at the repo root.
+// file at depth 1 or 2. We deliberately do not walk deeper than src/.
 func hasCSharpProject(root string) bool {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -232,9 +252,9 @@ func (s LanguageSignals) Primary() string {
 }
 
 // DetectLanguageSignals mirrors DetectLanguage but returns every signal
-// it finds so callers can report mismatches ("repo claimed atlas-boot
+// it finds so callers can report mismatches (e.g. repo claimed java-spring
 // but we found go.mod"). The canonical-spec path is populated whenever
-// DiscoverCanonicalSpec would succeed so meridian can decide to short-
+// DiscoverCanonicalSpec would succeed so callers can decide to short-
 // circuit source extraction even for a correctly-labelled service.
 func DetectLanguageSignals(root string) LanguageSignals {
 	var s LanguageSignals

@@ -19,15 +19,15 @@ func TestDiscoverCanonicalSpec_NoCandidate(t *testing.T) {
 	}
 }
 
-func TestDiscoverCanonicalSpec_FindsSailPointAPI(t *testing.T) {
+func TestDiscoverCanonicalSpec_FindsNestedModuleOpenAPI(t *testing.T) {
 	root := t.TempDir()
-	subDir := filepath.Join(root, "my-svc-api")
+	subDir := filepath.Join(root, "example-api")
 	if err := os.MkdirAll(subDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	content := `openapi: 3.0.1
 info:
-  title: My Svc
+  title: Example API
   version: 1.0.0
 paths:
   /widgets:
@@ -47,7 +47,7 @@ components:
         id:
           type: string
 `
-	if err := os.WriteFile(filepath.Join(subDir, "sailpoint-api.yaml"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(subDir, "openapi.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	spec, err := DiscoverCanonicalSpec(root)
@@ -55,7 +55,7 @@ components:
 		t.Fatalf("DiscoverCanonicalSpec: %v", err)
 	}
 	if spec == nil {
-		t.Fatal("expected to find sailpoint-api.yaml under my-svc-api/")
+		t.Fatal("expected to find openapi.yaml under example-api/")
 	}
 	if spec.Kind != "openapi3" {
 		t.Errorf("Kind = %q, want openapi3", spec.Kind)
@@ -66,15 +66,15 @@ components:
 	if spec.Types != 1 {
 		t.Errorf("Types = %d, want 1", spec.Types)
 	}
-	if !strings.HasSuffix(spec.RelPath, filepath.Join("my-svc-api", "sailpoint-api.yaml")) {
-		t.Errorf("RelPath = %q, want suffix my-svc-api/sailpoint-api.yaml", spec.RelPath)
+	if !strings.HasSuffix(spec.RelPath, filepath.Join("example-api", "openapi.yaml")) {
+		t.Errorf("RelPath = %q, want suffix example-api/openapi.yaml", spec.RelPath)
 	}
 }
 
 func TestDiscoverCanonicalSpec_PriorityOrder(t *testing.T) {
 	root := t.TempDir()
 	// Place a lower-priority docs/swagger.yaml AND a higher-priority
-	// sailpoint-api.yaml: the latter should win.
+	// root openapi.yaml: the latter should win.
 	docs := filepath.Join(root, "docs")
 	if err := os.MkdirAll(docs, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -83,8 +83,8 @@ func TestDiscoverCanonicalSpec_PriorityOrder(t *testing.T) {
 		t.Fatalf("write swagger: %v", err)
 	}
 	top := "openapi: 3.0.3\ninfo: {title: top, version: 2}\npaths: {}\n"
-	if err := os.WriteFile(filepath.Join(root, "sailpoint-api.yaml"), []byte(top), 0o644); err != nil {
-		t.Fatalf("write sailpoint-api: %v", err)
+	if err := os.WriteFile(filepath.Join(root, "openapi.yaml"), []byte(top), 0o644); err != nil {
+		t.Fatalf("write openapi: %v", err)
 	}
 
 	spec, err := DiscoverCanonicalSpec(root)
@@ -94,7 +94,7 @@ func TestDiscoverCanonicalSpec_PriorityOrder(t *testing.T) {
 	if spec == nil {
 		t.Fatal("expected a spec")
 	}
-	if !strings.HasSuffix(spec.Path, "sailpoint-api.yaml") {
+	if !strings.HasSuffix(spec.Path, "openapi.yaml") {
 		t.Fatalf("priority order wrong: got %s", spec.Path)
 	}
 	if spec.Kind != "openapi3" {
@@ -199,7 +199,7 @@ paths:
 		RootDir:          root,
 		Title:            "Override",
 		OverrideSpecPath: specPath,
-		Template:         "atlas-go",
+		Template:         "go-web",
 	})
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
@@ -214,7 +214,7 @@ paths:
 	if info["x-spec-source"] != "canonical-openapi3" {
 		t.Errorf("x-spec-source not set: %v", info["x-spec-source"])
 	}
-	if info["x-service-template"] != "atlas-go" {
+	if info["x-service-template"] != "go-web" {
 		t.Errorf("x-service-template not set: %v", info["x-service-template"])
 	}
 }
@@ -224,7 +224,7 @@ paths:
 // referenced via $ref. The canonical loader's refInliner walks the
 // decoded map, inlines path-item refs in place, and hoists schemas
 // into components so the persisted output carries the inlined
-// operations and schemas -- that is exactly what downstream meridian
+// operations and schemas -- that is exactly what downstream orchestration
 // stages require.
 func TestDiscoverCanonicalSpec_InlinesExternalRefs(t *testing.T) {
 	root := t.TempDir()

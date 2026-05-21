@@ -483,7 +483,7 @@ func TypeString(t types.Type) string {
 }
 
 // SimplifyTypeName extracts a simple name from a full type string.
-// e.g., "github.com/sailpoint/pkg.Type" -> "Type"
+// e.g., "example.com/acme/pkg.Type" -> "Type"
 func SimplifyTypeName(fullName string) string {
 	// Find last dot
 	for i := len(fullName) - 1; i >= 0; i-- {

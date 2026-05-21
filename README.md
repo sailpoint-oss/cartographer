@@ -66,7 +66,7 @@ service:
   description: "OpenAPI extracted from a single service codebase"
   version: "2.0.0"
   language: "java"
-  template: "atlas-boot"
+  template: "java-spring"
   team: "API Platform"
   slack: "#api-platform"
   contact:
@@ -88,7 +88,16 @@ service:
   excludePaths:
     - /debug/**
     - /internal/**
+  extraction:
+    # Optional code-derived behavior (defaults emit only what source declares):
+    errorSchema: legacy-error-response  # or problem-details when handlers reference RFC 7807 types
+    signaturePaginationTypes: []        # expand indexed DTO fields when type appears in a method signature
+    mergeCoLocatedOpenAPI: false        # merge in-repo OpenAPI path fragments for hybrid repos
 ```
+
+Extracted specs may include `info.x-cartographer-diagnostics` with controller and operation counts for triage.
+
+Supported languages: Go, Java (Spring/JAX-RS), TypeScript, Python (FastAPI), and C# (minimal APIs / MVC).
 
 ## GitHub Action
 

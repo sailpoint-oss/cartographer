@@ -1,7 +1,7 @@
 // Package extraction -- canonical.go handles in-repo OpenAPI/Swagger specs.
 //
 // Some services are the source of truth for their own OpenAPI spec: they
-// either hand-author a file like `sailpoint-api.yaml`, or they generate one
+// either hand-author a file like `openapi.yaml`, or they generate one
 // from code annotations (swaggo for Go, openapi-generator for Spring) and
 // commit the result. For those services, running source-code extraction
 // produces zero operations because the controllers simply extend generated
@@ -10,14 +10,13 @@
 //
 // Supported layouts in priority order:
 //
-//  1. <root>/sailpoint-api.yaml
-//  2. <root>/<svc>-api/sailpoint-api.yaml
-//  3. <root>/openapi.yaml / openapi.yml / openapi.json
-//  4. <root>/openapi-spec.yaml
-//  5. <root>/docs/{openapi,swagger}.{yaml,yml,json}
-//  6. <root>/api/openapi.{yaml,yml}
-//  7. <root>/api-spec/openapi.{yaml,yml}
-//  8. <root>/spec/openapi.{yaml,yml}
+//  1. <root>/openapi.yaml / openapi.yml / openapi.json
+//  2. <root>/<module>-api/openapi.yaml
+//  3. <root>/openapi-spec.yaml
+//  4. <root>/docs/{openapi,swagger}.{yaml,yml,json}
+//  5. <root>/api/openapi.{yaml,yml}
+//  6. <root>/api-spec/openapi.{yaml,yml}
+//  7. <root>/spec/openapi.{yaml,yml}
 //
 // Swagger 2.0 files (swaggo output) are auto-detected by the "swagger: 2.0"
 // top-level field or the presence of "definitions:" without "openapi:" and
@@ -81,8 +80,7 @@ func DiscoverCanonicalSpec(root string) (*CanonicalSpec, error) {
 // For OpenAPI 3 documents the map-walk bundler resolves external $ref
 // pointers (e.g. ./paths/widgets.yaml) so the persisted output is a single
 // self-contained document; this is essential for services that split their
-// spec across files, such as the openapi-generator Spring convention used
-// by gov-certification.
+// spec across files, such as the openapi-generator split-module convention.
 func LoadCanonicalSpec(path, relRoot string) (*CanonicalSpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -132,7 +130,7 @@ func parseAndResolveSpec(path string, data []byte) (map[string]any, string, int,
 // bundleOpenAPI3 inlines path-item refs and hoists schema refs using the
 // in-house map-walk inliner. On any error we fall back to the un-bundled
 // map rather than propagate -- downstream is fine with partial specs and
-// meridian will still persist something callers can inspect.
+// callers will still persist something inspectable.
 func bundleOpenAPI3(path string, specMap map[string]any) map[string]any {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -154,7 +152,7 @@ func bundleOpenAPI3(path string, specMap map[string]any) map[string]any {
 // countViaNavigator parses the bundled map with Navigator and returns
 // (operations, component-schemas). Navigator is the canonical parser for
 // OpenAPI in this toolchain, so delegating here keeps the counts we
-// persist in line with what meridian / telescope see.
+// persist in line with what downstream tooling sees.
 func countViaNavigator(spec map[string]any) (int, int) {
 	data, err := json.Marshal(spec)
 	if err != nil {
@@ -254,7 +252,7 @@ func (r *refInliner) inlineWith(node any, currentFile string, inflight map[strin
 // resolveRef decides whether to inline the target in place or to
 // hoist it into components. Target-file URIs are normalised via
 // Navigator's URI helpers so the behaviour matches the rest of the
-// toolchain (same file/fragment splitting as telescope / meridian).
+// toolchain (same file/fragment splitting as other OpenAPI consumers).
 //
 // The hoist branch is cycle-safe because the lifted component keeps
 // its intra-document $ref intact, so a self-referencing schema stays
@@ -518,8 +516,6 @@ func pointerDeref(doc map[string]any, fragment string) (any, error) {
 func canonicalSpecCandidates(root string) []string {
 	// Root-level candidates (highest priority).
 	rel := []string{
-		"sailpoint-api.yaml",
-		"sailpoint-api.yml",
 		"openapi.yaml",
 		"openapi.yml",
 		"openapi.json",
@@ -545,9 +541,8 @@ func canonicalSpecCandidates(root string) []string {
 		out = append(out, filepath.Join(root, r))
 	}
 
-	// openapi-generator split-module convention: <root>/<svc>-api/sailpoint-api.yaml
-	// (gov-certification → gov-certification-api/sailpoint-api.yaml). We scan
-	// only one level deep to avoid runaway recursion in large monorepos.
+	// openapi-generator split-module convention: <root>/<module>-api/openapi.yaml.
+	// We scan only one level deep to avoid runaway recursion in large monorepos.
 	if entries, err := os.ReadDir(root); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() {
@@ -558,7 +553,7 @@ func canonicalSpecCandidates(root string) []string {
 				continue
 			}
 			sub := filepath.Join(root, name)
-			for _, tail := range []string{"sailpoint-api.yaml", "sailpoint-api.yml", "openapi.yaml", "openapi.yml"} {
+			for _, tail := range []string{"openapi.yaml", "openapi.yml"} {
 				out = append(out, filepath.Join(sub, tail))
 			}
 		}
@@ -741,7 +736,7 @@ func convertSwagger2ToOpenAPI3(raw map[string]any) map[string]any {
 
 // buildServersFromSwagger2 assembles an OpenAPI 3 servers array from the
 // OAS 2 host/basePath/schemes triplet. When only basePath is set we emit
-// a single scheme-less entry ("/v1"), which is what meridian / scalar
+// a single scheme-less entry ("/v1"), which is what doc viewers
 // render for services whose host is the gateway anyway.
 func buildServersFromSwagger2(raw map[string]any) []any {
 	host, _ := raw["host"].(string)

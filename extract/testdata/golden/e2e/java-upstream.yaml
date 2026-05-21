@@ -1,0 +1,211 @@
+components:
+    schemas:
+        CreateOrderRequest:
+            properties:
+                name:
+                    type: string
+            type: object
+        CreateWidgetRequest:
+            properties:
+                name:
+                    type: string
+            required:
+                - name
+            type: object
+        OrderDto:
+            properties:
+                id:
+                    type: string
+            type: object
+        WidgetDto:
+            properties:
+                id:
+                    type: string
+            type: object
+info:
+    title: Upstream Fixture API
+    version: "1.0"
+    x-cartographer-diagnostics:
+        controllers: 6
+        operations: 7
+        unmappedHandlerMethods: 0
+openapi: 3.0.3
+paths:
+    /api/v1/catalog/items:
+        get:
+            description: Retrieve a list of Items.
+            operationId: listItems
+            responses:
+                "200":
+                    description: Items
+                    headers:
+                        X-Total-Count:
+                            description: Total number of matching items
+                            schema:
+                                format: int64
+                                type: integer
+            summary: List Items
+            tags:
+                - Catalog
+    /api/v1/orders:
+        get:
+            description: Retrieve a list of Orders.
+            operationId: listOrders
+            parameters:
+                - description: Offset into the full result set. Usually specified with `limit` to paginate through the results.
+                  example: "0"
+                  explode: true
+                  in: query
+                  name: offset
+                  required: true
+                  schema:
+                    default: 0
+                    format: int32
+                    type: integer
+                  style: form
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                items:
+                                    $ref: '#/components/schemas/OrderDto'
+                                type: array
+                    description: List of Orders
+            summary: List Orders
+            tags:
+                - OrderApi
+        post:
+            description: Create a new Order.
+            operationId: createOrder
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                name:
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    id:
+                                        type: string
+                                type: object
+                    description: Order created
+            summary: Create Order
+            tags:
+                - OrderApi
+    /api/v1/scoped/entries:
+        get:
+            description: Retrieve a list of Entries.
+            operationId: listEntries
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                items:
+                                    type: string
+                                type: array
+                    description: List of Entries
+            summary: List Entries
+            tags:
+                - Scoped
+    /api/v1/widgets:
+        post:
+            description: Create a new Widget.
+            operationId: create
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                name:
+                                    type: string
+                            required:
+                                - name
+                            type: object
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    id:
+                                        type: string
+                                type: object
+                    description: Widget created
+            summary: Create Widget
+            tags:
+                - Widget
+    /api/v1/widgets/{id}:
+        get:
+            description: Retrieve a single Widget by its unique identifier.
+            operationId: get
+            parameters:
+                - description: The unique identifier of the resource.
+                  example: 2c91808a7813090a017814121919ecca
+                  in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+                  style: simple
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    id:
+                                        type: string
+                                type: object
+                    description: Widget
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    message:
+                                        type: string
+                                    status:
+                                        format: int32
+                                        type: integer
+                                type: object
+                    description: Not Found
+            summary: Get Widget
+            tags:
+                - Widget
+    /inner/items:
+        get:
+            description: Retrieve a list of Items.
+            operationId: listItems_get_items
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                items:
+                                    type: string
+                                type: array
+                    description: List of Items
+            summary: List Items
+            tags:
+                - InnerCatalog
+tags:
+    - description: Operations related to Catalog
+      name: Catalog
+    - description: Operations related to OrderApi
+      name: OrderApi
+    - description: Operations related to InnerCatalog
+      name: InnerCatalog
+    - description: Operations related to Scoped
+      name: Scoped
+    - description: Operations related to Widget
+      name: Widget

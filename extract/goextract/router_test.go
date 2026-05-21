@@ -18,7 +18,7 @@ package main
 import (
 	"net/http"
 	"github.com/gorilla/mux"
-	"github.com/sailpoint/atlas-go/v2/atlas/web"
+	"example.com/webframework/web"
 )
 
 func setupRouter() {
@@ -27,7 +27,7 @@ func setupRouter() {
 	var handler http.Handler
 	
 	// Direct web.RequireRights with single right
-	router.Handle("/api/test", web.RequireRights(summarizer, "sp:test:read")(handler)).Methods("GET")
+	router.Handle("/api/test", web.RequireRights(summarizer, "api:test:read")(handler)).Methods("GET")
 }`
 
 	fset := token.NewFileSet()
@@ -64,7 +64,7 @@ func setupRouter() {
 		t.Fatalf("Expected 1 right, got %d", len(routeInfo.Rights))
 	}
 
-	if routeInfo.Rights[0] != "sp:test:read" {
+	if routeInfo.Rights[0] != "api:test:read" {
 		t.Errorf("Expected right sp:test:read, got %s", routeInfo.Rights[0])
 	}
 }
@@ -77,7 +77,7 @@ package main
 import (
 	"net/http"
 	"github.com/gorilla/mux"
-	"github.com/sailpoint/atlas-go/v2/atlas/web"
+	"example.com/webframework/web"
 )
 
 func setupRouter() {
@@ -86,7 +86,7 @@ func setupRouter() {
 	var handler http.Handler
 	
 	// Direct web.RequireRights with multiple rights
-	router.Handle("/api/test", web.RequireRights(summarizer, "sp:test:read", "sp:test:write")(handler)).Methods("POST")
+	router.Handle("/api/test", web.RequireRights(summarizer, "api:test:read", "api:test:write")(handler)).Methods("POST")
 }`
 
 	fset := token.NewFileSet()
@@ -120,8 +120,8 @@ func setupRouter() {
 	}
 
 	expectedRights := map[string]bool{
-		"sp:test:read":  true,
-		"sp:test:write": true,
+		"api:test:read":  true,
+		"api:test:write": true,
 	}
 
 	for _, right := range routeInfo.Rights {
@@ -153,7 +153,7 @@ func setupRouter() {
 	var handler http.Handler
 	
 	// Service wrapper method
-	router.Handle("/api/test", s.requireRight(handler, "sp:test:read")).Methods("GET")
+	router.Handle("/api/test", s.requireRight(handler, "api:test:read")).Methods("GET")
 }`
 
 	fset := token.NewFileSet()
@@ -190,7 +190,7 @@ func setupRouter() {
 		t.Fatalf("Expected 1 right, got %d", len(routeInfo.Rights))
 	}
 
-	if routeInfo.Rights[0] != "sp:test:read" {
+	if routeInfo.Rights[0] != "api:test:read" {
 		t.Errorf("Expected right sp:test:read, got %s", routeInfo.Rights[0])
 	}
 }
@@ -232,7 +232,7 @@ func setupRouter() {
 	s := &Service{}
 	var handler http.Handler
 	
-	router.Handle("/api/test", s.` + tc.methodName + `(handler, "sp:test:read")).Methods("GET")
+	router.Handle("/api/test", s.` + tc.methodName + `(handler, "api:test:read")).Methods("GET")
 }`
 
 			fset := token.NewFileSet()
@@ -266,7 +266,7 @@ func setupRouter() {
 					t.Fatalf("Expected 1 right, got %d", len(routeInfo.Rights))
 				}
 
-				if routeInfo.Rights[0] != "sp:test:read" {
+				if routeInfo.Rights[0] != "api:test:read" {
 					t.Errorf("Expected right sp:test:read, got %s", routeInfo.Rights[0])
 				}
 			} else {
@@ -389,16 +389,16 @@ func setup() {
 package main
 import (
 	"github.com/gorilla/mux"
-	"github.com/sailpoint/atlas-go/v2/atlas/web"
+	"example.com/webframework/web"
 )
 func setup() {
 	router := mux.NewRouter()
 	var handler interface{}
 	var summarizer interface{}
-	router.Handle("/api/direct", web.RequireRights(summarizer, "sp:test:read")(handler)).Methods("GET")
+	router.Handle("/api/direct", web.RequireRights(summarizer, "api:test:read")(handler)).Methods("GET")
 }`,
 			expectedPath:  "/api/direct",
-			expectedRight: "sp:test:read",
+			expectedRight: "api:test:read",
 			expectAuth:    true,
 		},
 		{
@@ -412,10 +412,10 @@ func setup() {
 	router := mux.NewRouter()
 	s := &Service{}
 	var handler interface{}
-	router.Handle("/api/wrapped", s.requireRight(handler, "sp:test:write")).Methods("POST")
+	router.Handle("/api/wrapped", s.requireRight(handler, "api:test:write")).Methods("POST")
 }`,
 			expectedPath:  "/api/wrapped",
-			expectedRight: "sp:test:write",
+			expectedRight: "api:test:write",
 			expectAuth:    true,
 		},
 	}
@@ -530,14 +530,14 @@ package main
 
 import (
 	"github.com/gorilla/mux"
-	"github.com/sailpoint/atlas-go/v2/atlas/web"
+	"example.com/webframework/web"
 )
 
 func setupRouter() {
 	router := mux.NewRouter()
 	sub := router.PathPrefix("/v1").Subrouter()
 	var summarizer interface{}
-	sub.Use(web.RequireRights(summarizer, "sp:v1:access"))
+	sub.Use(web.RequireRights(summarizer, "api:v1:access"))
 	var handler interface{}
 	sub.Handle("/users", handler).Methods("GET")
 }
@@ -593,7 +593,7 @@ func setupRouter() {
 
 	found := false
 	for _, right := range routeInfo.Rights {
-		if right == "sp:v1:access" {
+		if right == "api:v1:access" {
 			found = true
 			break
 		}
@@ -757,7 +757,7 @@ func TestRouteInfo(t *testing.T) {
 		Path:        "/api/users",
 		Method:      "GET",
 		HandlerName: "listUsers",
-		Rights:      []string{"sp:users:read"},
+		Rights:      []string{"api:users:read"},
 		Middleware:  []string{"logger", "auth"},
 	}
 
@@ -773,7 +773,7 @@ func TestRouteInfo(t *testing.T) {
 		t.Errorf("Expected handler 'listUsers', got '%s'", ri.HandlerName)
 	}
 
-	if len(ri.Rights) != 1 || ri.Rights[0] != "sp:users:read" {
+	if len(ri.Rights) != 1 || ri.Rights[0] != "api:users:read" {
 		t.Errorf("Expected rights ['sp:users:read'], got %v", ri.Rights)
 	}
 }
@@ -782,14 +782,14 @@ func TestRouteInfo(t *testing.T) {
 func TestSubrouterContext(t *testing.T) {
 	ctx := &SubrouterContext{
 		PathPrefix: "/v1/api",
-		Rights:     []string{"sp:api:access"},
+		Rights:     []string{"api:api:access"},
 	}
 
 	if ctx.PathPrefix != "/v1/api" {
 		t.Errorf("Expected PathPrefix '/v1/api', got '%s'", ctx.PathPrefix)
 	}
 
-	if len(ctx.Rights) != 1 || ctx.Rights[0] != "sp:api:access" {
+	if len(ctx.Rights) != 1 || ctx.Rights[0] != "api:api:access" {
 		t.Errorf("Expected rights ['sp:api:access'], got %v", ctx.Rights)
 	}
 }
@@ -1337,14 +1337,14 @@ package main
 
 import (
 	"github.com/go-chi/chi/v5"
-	"github.com/sailpoint/atlas-go/v2/atlas/web"
+	"example.com/webframework/web"
 )
 
 func setupRouter() {
 	r := chi.NewRouter()
 	var summarizer interface{}
 	var handler interface{}
-	r.With(web.RequireRights(summarizer, "sp:test:read")).Get("/api/test", handler)
+	r.With(web.RequireRights(summarizer, "api:test:read")).Get("/api/test", handler)
 }`
 
 	fset := token.NewFileSet()
@@ -1396,14 +1396,14 @@ package main
 
 import (
 	"github.com/go-chi/chi/v5"
-	"github.com/sailpoint/atlas-go/v2/atlas/web"
+	"example.com/webframework/web"
 )
 
 func setupRouter() {
 	r := chi.NewRouter()
 	var summarizer interface{}
 	var handler interface{}
-	r.With(web.RequireRights(summarizer, "sp:test:read")).Get("/api/test", handler)
+	r.With(web.RequireRights(summarizer, "api:test:read")).Get("/api/test", handler)
 }`
 
 	fset := token.NewFileSet()
@@ -1432,7 +1432,7 @@ func setupRouter() {
 	if len(routeInfo.Rights) == 0 {
 		t.Fatalf("Expected rights from chi.With chain, got none")
 	}
-	if routeInfo.Rights[0] != "sp:test:read" {
+	if routeInfo.Rights[0] != "api:test:read" {
 		t.Fatalf("Expected first right sp:test:read, got %v", routeInfo.Rights)
 	}
 }

@@ -172,9 +172,9 @@ func (snn *SchemaNameNormalizer) GetSchemaNameMapping() map[string]string {
 }
 
 // Examples of transformations:
-// "[]github.com/sailpoint/sp-api-usage/internal/model/database.TotalCount" -> "TotalCountArray"
+// "[]example.com/acme-api/internal/models.TotalCount" -> "TotalCountArray"
 // "[]database.TotalCount" -> "TotalCountArray"
-// "*github.com/sailpoint/sp-api-usage/internal/model/database.ApiCallBreakdown" -> "ApiCallBreakdown"
+// "*example.com/acme-api/internal/models.ApiCallBreakdown" -> "ApiCallBreakdown"
 // "*database.ApiCallBreakdown" -> "ApiCallBreakdown"
 // "map[string]string" -> "StringMap"
 // "github.com/org/repo/pkg.User" -> "User"

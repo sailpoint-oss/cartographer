@@ -193,13 +193,13 @@ func (ha *HandlerAnalyzer) analyzeCall(call *ast.CallExpr, handlerInfo *HandlerI
 		// Plain writes (often text/plain). Capture content type + response body shape.
 		ha.extractWriteResponse(call, handlerInfo, info)
 
-	case ha.isAtlasQueryOptionsCall(call):
-		// Atlas middleware-style query parsing: add canonical v3 query params
-		ha.addAtlasV3QueryParams(handlerInfo)
+	case ha.isFrameworkQueryOptionsCall(call):
+		// Framework middleware-style query parsing: add canonical v3 query params
+		ha.addFrameworkV3QueryParams(handlerInfo)
 
 	case ha.isQueryContextCall(call):
 		// Pattern: model.GetQuery(r.Context()) or similar: indicates query options middleware in effect
-		ha.addAtlasV3QueryParams(handlerInfo)
+		ha.addFrameworkV3QueryParams(handlerInfo)
 
 	case ha.isCustomErrorWrapper(call, handlerInfo, info):
 		// Use tracer for recursive analysis
@@ -266,10 +266,10 @@ func (ha *HandlerAnalyzer) extractWriteResponse(call *ast.CallExpr, handlerInfo 
 }
 
 // =========================================================================
-// Atlas query options (middleware-style)
+// Framework web query options (middleware-style)
 // =========================================================================
 
-func (ha *HandlerAnalyzer) isAtlasQueryOptionsCall(call *ast.CallExpr) bool {
+func (ha *HandlerAnalyzer) isFrameworkQueryOptionsCall(call *ast.CallExpr) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
@@ -282,7 +282,7 @@ func (ha *HandlerAnalyzer) isAtlasQueryOptionsCall(call *ast.CallExpr) bool {
 	}
 }
 
-func (ha *HandlerAnalyzer) addAtlasV3QueryParams(handlerInfo *HandlerInfo) {
+func (ha *HandlerAnalyzer) addFrameworkV3QueryParams(handlerInfo *HandlerInfo) {
 	add := func(name, typ, def string) {
 		for _, p := range handlerInfo.QueryParams {
 			if p.Name == name {
@@ -387,7 +387,7 @@ func (ha *HandlerAnalyzer) isWriteJSONCall(call *ast.CallExpr) bool {
 }
 
 // isWriteJSONCallWithTypeInfo checks if a call is web.WriteJSON using type information.
-// This works even if the web package is imported with a different alias (e.g., atlasweb).
+// This works even if the web package is imported with a different alias (e.g., webfw).
 func (ha *HandlerAnalyzer) isWriteJSONCallWithTypeInfo(call *ast.CallExpr, info *types.Info) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -399,11 +399,11 @@ func (ha *HandlerAnalyzer) isWriteJSONCallWithTypeInfo(call *ast.CallExpr, info 
 		return false
 	}
 
-	// Use type information to check if this is from the atlas-go/web package
+	// Use type information to check if this is from a web framework package.
 	if info != nil && info.Uses != nil {
 		if obj := info.Uses[sel.Sel]; obj != nil {
 			pkg := obj.Pkg()
-			if pkg != nil && strings.Contains(pkg.Path(), "atlas-go") && strings.HasSuffix(pkg.Path(), "/web") {
+			if pkg != nil && isFrameworkWebPackage(pkg.Path()) {
 				return true
 			}
 		}
@@ -439,9 +439,9 @@ func (ha *HandlerAnalyzer) isErrorCallWithTypeInfo(call *ast.CallExpr, info *typ
 	// Use type information to check if this is a web package function
 	if info != nil && info.Uses != nil {
 		if obj := info.Uses[sel.Sel]; obj != nil {
-			// Check if the function belongs to the atlas-go/web package
+			// Check if the function belongs to a web framework package.
 			pkg := obj.Pkg()
-			if pkg != nil && strings.Contains(pkg.Path(), "atlas-go") && strings.HasSuffix(pkg.Path(), "/web") {
+			if pkg != nil && isFrameworkWebPackage(pkg.Path()) {
 				return ha.isWebErrorFunction(sel.Sel.Name)
 			}
 		}
@@ -544,7 +544,7 @@ func (ha *HandlerAnalyzer) extractErrorResponseDetailed(call *ast.CallExpr, hand
 	errorInfo := ErrorResponseInfo{
 		StatusCode:      statusCode,
 		ResponseType:    "web.Error",
-		ResponsePackage: "github.com/sailpoint/atlas-go/v2/atlas/web",
+		ResponsePackage: FrameworkWebPackagePath,
 		Source:          "web." + methodName,
 	}
 
@@ -1109,9 +1109,9 @@ func (ha *HandlerAnalyzer) isContentTypeSetCall(call *ast.CallExpr) bool {
 		return false
 	}
 
-	if sel.Sel.Name != "Set" {
-		return false
-	}
+		if sel.Sel.Name != "Set" && sel.Sel.Name != "Add" {
+			return false
+		}
 
 	// Check if we have at least 2 arguments and first is "Content-Type"
 	if len(call.Args) < 2 {

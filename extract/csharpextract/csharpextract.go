@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/sailpoint-oss/cartographer/extract/index"
@@ -224,25 +225,65 @@ func extractClassSchemas(f sourceFile) map[string]interface{} {
 		name := m[1]
 		props := map[string]interface{}{}
 		for _, p := range parseProperties(m[2] + "\n" + m[3]) {
-			props[p.Name] = typeSchema(p.Type)
+			propSchema := typeSchema(p.Type)
+			if p.MaxLen != nil {
+				propSchema["maxLength"] = *p.MaxLen
+			}
+			props[p.Name] = propSchema
 		}
 		if len(props) > 0 {
-			out[name] = map[string]interface{}{"type": "object", "properties": props}
+			schema := map[string]interface{}{"type": "object", "properties": props}
+			var required []interface{}
+			for _, p := range parseProperties(m[2] + "\n" + m[3]) {
+				if p.Required {
+					required = append(required, p.Name)
+				}
+			}
+			if len(required) > 0 {
+				schema["required"] = required
+			}
+			out[name] = schema
 		}
 	}
 	return out
 }
 
-type property struct{ Name, Type string }
+type property struct {
+	Name     string
+	Type     string
+	Required bool
+	MinLen   *int
+	MaxLen   *int
+}
 
 func parseProperties(text string) []property {
 	var out []property
-	propRe := regexp.MustCompile(`(?:public\s+)?([A-Za-z0-9_<>,\[\]?]+)\s+(\w+)\s*(?:\{|[,)]|$)`)
-	for _, m := range propRe.FindAllStringSubmatch(text, -1) {
-		if m[1] == "class" || m[1] == "record" || m[2] == "get" || m[2] == "set" {
+	propRe := regexp.MustCompile(`(?s)(?:\[[^\]]+\]\s*)*(?:public\s+)?([A-Za-z0-9_<>,\[\]?]+)\s+(\w+)\s*(?:\{|[,)]|$)`)
+	for _, loc := range propRe.FindAllStringSubmatchIndex(text, -1) {
+		typ := text[loc[2]:loc[3]]
+		name := text[loc[4]:loc[5]]
+		if typ == "class" || typ == "record" || name == "get" || name == "set" {
 			continue
 		}
-		out = append(out, property{Name: lowerFirst(m[2]), Type: cleanType(m[1])})
+		attrs := text[loc[0]:loc[2]]
+		p := property{Name: lowerFirst(name), Type: cleanType(typ)}
+		if strings.Contains(attrs, "[Required") {
+			p.Required = true
+		}
+		if mm := regexp.MustCompile(`\[StringLength\(\s*(\d+)`).FindStringSubmatch(attrs); len(mm) > 1 {
+			if n, err := strconv.Atoi(mm[1]); err == nil {
+				p.MaxLen = &n
+			}
+		}
+		if mm := regexp.MustCompile(`\[Range\(\s*(\d+)\s*,\s*(\d+)`).FindStringSubmatch(attrs); len(mm) > 2 {
+			if min, err := strconv.Atoi(mm[1]); err == nil {
+				_ = min
+			}
+			if max, err := strconv.Atoi(mm[2]); err == nil {
+				p.MaxLen = &max
+			}
+		}
+		out = append(out, p)
 	}
 	return out
 }

@@ -44,7 +44,7 @@ var WellKnownHeaders = map[string]WellKnownHeaderInfo{
 		Description: "Language preference for localized responses (BCP 47)",
 		Example:     "en-US",
 	},
-	"X-SailPoint-Experimental": {
+	"X-Experimental-Feature": {
 		Description: "Required header to access experimental API endpoints",
 		Example:     "true",
 	},
@@ -64,8 +64,8 @@ var WellKnownHeaders = map[string]WellKnownHeaderInfo{
 		Description: "Unique identifier for request tracing",
 		Example:     "d290f1ee-6c54-4b01-90e6-d701748f0851",
 	},
-	"SLPT-Request-ID": {
-		Description: "SailPoint request correlation identifier",
+	"X-Correlation-ID": {
+		Description: "Request correlation identifier",
 		Example:     "d290f1ee-6c54-4b01-90e6-d701748f0851",
 	},
 }

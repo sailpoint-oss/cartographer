@@ -405,7 +405,7 @@ func (n *TypeNode) String() string {
 }
 
 // normalizeGenericName converts a TypeNode to a valid OpenAPI schema name.
-// e.g. ExportedObject<Foo> -> ExportedObjectFoo
+// e.g. WrappedRecord<Foo> -> WrappedRecordFoo
 func normalizeGenericName(n *TypeNode) string {
 	var b strings.Builder
 	b.WriteString(n.Name)

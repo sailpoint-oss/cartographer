@@ -6,8 +6,8 @@ import java.util.List;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/api/v1/chronicle")
-public class ChronicleController {
+@RequestMapping("/api/v1/inventory")
+public class InventoryController {
 
     @GetMapping("/services")
     public ResponseEntity<List<ServiceAPI>> listServices() {

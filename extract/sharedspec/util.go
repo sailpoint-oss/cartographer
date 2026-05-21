@@ -223,6 +223,20 @@ func ErrorResponseSchema() map[string]any {
 	}
 }
 
+// ProblemDetailsSchema returns RFC 7807 Problem Details schema.
+func ProblemDetailsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"type":     map[string]any{"type": "string", "format": "uri"},
+			"title":    map[string]any{"type": "string"},
+			"status":   map[string]any{"type": "integer", "format": "int32"},
+			"detail":   map[string]any{"type": "string"},
+			"instance": map[string]any{"type": "string", "format": "uri"},
+		},
+	}
+}
+
 // ErrorResponseRef returns a $ref to the shared ErrorResponse schema.
 func ErrorResponseRef() map[string]any {
 	return map[string]any{

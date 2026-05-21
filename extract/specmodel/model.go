@@ -7,9 +7,10 @@ import "github.com/sailpoint-oss/cartographer/extract/index"
 
 // Result holds unified extraction results for spec generation.
 type Result struct {
-	Operations []*Operation
-	Schemas    map[string]any // pre-computed schemas (WITH annotations from index resolver)
-	Types      map[string]*index.TypeDecl
+	Operations  []*Operation
+	Schemas     map[string]any // pre-computed schemas (WITH annotations from index resolver)
+	Types       map[string]*index.TypeDecl
+	Diagnostics map[string]any // optional extraction counters for info extensions
 }
 
 // Operation represents an extracted API endpoint in a language-agnostic form.
@@ -32,6 +33,7 @@ type Operation struct {
 	ProducesContentType    string
 	ReturnDescription      string
 	ErrorResponses         map[int]string
+	ErrorResponseSchemas   []ErrorResponseSchema
 	AnnotatedResponses     []AnnotatedResponse
 	ResponseHeaders        map[string]string
 	NullableResponse       bool
@@ -87,4 +89,14 @@ type SpecConfig struct {
 	OpenAPIVersion  string // "3.1" or "3.2"
 	ServiceTemplate string
 	TreeShake       bool
+	// ErrorSchema: "" (code-only), "legacy-error-response", or "problem-details".
+	ErrorSchema string
+}
+
+// ErrorResponseSchema maps HTTP status codes to response body schema type names
+// discovered from @ControllerAdvice handlers or annotations.
+type ErrorResponseSchema struct {
+	StatusCode int
+	SchemaType string
+	Description string
 }

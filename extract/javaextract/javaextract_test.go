@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sailpoint-oss/cartographer/extract/extractionopts"
 	"github.com/sailpoint-oss/cartographer/extract/generics"
 	"github.com/sailpoint-oss/cartographer/extract/index"
 	"github.com/sailpoint-oss/cartographer/extract/sharedspec"
@@ -503,8 +504,9 @@ func TestGenerateSpec(t *testing.T) {
 		Title:           "User Service",
 		Version:         "1.0.0",
 		OpenAPIVersion:  "3.2",
-		ServiceTemplate: "atlas-boot",
+		ServiceTemplate: "java-spring",
 		TreeShake:       true,
+		ErrorSchema:     "legacy-error-response",
 	})
 
 	// Check top-level structure
@@ -519,8 +521,8 @@ func TestGenerateSpec(t *testing.T) {
 	if info["title"] != "User Service" {
 		t.Errorf("expected title 'User Service', got %v", info["title"])
 	}
-	if info["x-service-template"] != "atlas-boot" {
-		t.Errorf("expected x-service-template 'atlas-boot', got %v", info["x-service-template"])
+	if info["x-service-template"] != "java-spring" {
+		t.Errorf("expected x-service-template 'java-spring', got %v", info["x-service-template"])
 	}
 
 	paths, ok := spec["paths"].(map[string]interface{})
@@ -1343,13 +1345,13 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 public class ReportController {
 
     @GetMapping
-    @PreAuthorize("hasAuthority('sp:reports:read')")
+    @PreAuthorize("hasAuthority('api:reports:read')")
     public String listReports() {
         return "[]";
     }
 
     @PostMapping
-    @SecurityRequirement(name = "oauth2", scopes = {"sp:reports:write"})
+    @SecurityRequirement(name = "oauth2", scopes = {"api:reports:write"})
     public String createReport(@RequestBody String body) {
         return "ok";
     }
@@ -1370,15 +1372,15 @@ func TestSecurityExtraction(t *testing.T) {
 		if op.OperationID == "listReports" {
 			if len(op.Security) == 0 {
 				t.Error("listReports should have security from @PreAuthorize")
-			} else if op.Security[0] != "sp:reports:read" {
-				t.Errorf("listReports security = %v, want [sp:reports:read]", op.Security)
+			} else if op.Security[0] != "api:reports:read" {
+				t.Errorf("listReports security = %v, want [api:reports:read]", op.Security)
 			}
 		}
 		if op.OperationID == "createReport" {
 			if len(op.Security) == 0 {
 				t.Error("createReport should have security from @SecurityRequirement")
-			} else if op.Security[0] != "sp:reports:write" {
-				t.Errorf("createReport security = %v, want [sp:reports:write]", op.Security)
+			} else if op.Security[0] != "api:reports:write" {
+				t.Errorf("createReport security = %v, want [api:reports:write]", op.Security)
 			}
 		}
 	}
@@ -1400,9 +1402,9 @@ func TestParsePreAuthorize(t *testing.T) {
 		input    string
 		expected []string
 	}{
-		{`("hasAuthority('sp:api:read')")`, []string{"sp:api:read"}},
+		{`("hasAuthority('api:api:read')")`, []string{"api:api:read"}},
 		{`("hasRole('ADMIN')")`, []string{"ROLE_ADMIN"}},
-		{`("hasAnyAuthority('sp:read', 'sp:write')")`, []string{"sp:read", "sp:write"}},
+		{`("hasAnyAuthority('api:read', 'api:write')")`, []string{"api:read", "api:write"}},
 	}
 	for _, tt := range tests {
 		got := parsePreAuthorize(tt.input, nil)
@@ -1744,8 +1746,8 @@ func TestParameterAnnotationParsing(t *testing.T) {
 func TestBuildSecuritySchemes(t *testing.T) {
 	result := &Result{
 		Operations: []*Operation{
-			{Security: []string{"sp:read", "sp:write"}},
-			{Security: []string{"sp:read"}},
+			{Security: []string{"api:read", "api:write"}},
+			{Security: []string{"api:read"}},
 		},
 		Schemas: make(map[string]interface{}),
 		Types:   make(map[string]*index.TypeDecl),
@@ -1987,12 +1989,12 @@ func TestRequireRightExtraction(t *testing.T) {
 @Path("/api/v1/tags")
 public class TagsResource {
     @GET
-    @RequireRight("sp:tags:read")
+    @RequireRight("api:tags:read")
     public List<TagDTO> list() { return null; }
 
     @DELETE
     @Path("/{id}")
-    @RequireRight({"sp:tags:delete", "sp:tags:manage"})
+    @RequireRight({"api:tags:delete", "api:tags:manage"})
     public void delete(@PathParam("id") String id) {}
 }`
 
@@ -2031,15 +2033,15 @@ public class TagsResource {
 	if getOp == nil {
 		t.Fatal("missing GET operation")
 	}
-	if len(getOp.Security) != 1 || getOp.Security[0] != "sp:tags:read" {
-		t.Errorf("GET security = %v, want [sp:tags:read]", getOp.Security)
+	if len(getOp.Security) != 1 || getOp.Security[0] != "api:tags:read" {
+		t.Errorf("GET security = %v, want [api:tags:read]", getOp.Security)
 	}
 
 	if deleteOp == nil {
 		t.Fatal("missing DELETE operation")
 	}
 	if len(deleteOp.Security) != 2 {
-		t.Errorf("DELETE security = %v, want [sp:tags:delete, sp:tags:manage]", deleteOp.Security)
+		t.Errorf("DELETE security = %v, want [api:tags:delete, api:tags:manage]", deleteOp.Security)
 	}
 }
 
@@ -2049,7 +2051,7 @@ func TestParsePreAuthorizeHasAnyRole(t *testing.T) {
 		expected []string
 	}{
 		{`("hasAnyRole('ADMIN', 'USER')")`, []string{"ROLE_ADMIN", "ROLE_USER"}},
-		{`("hasAuthority('sp:api:read')")`, []string{"sp:api:read"}},
+		{`("hasAuthority('api:api:read')")`, []string{"api:api:read"}},
 		{`("hasRole('ADMIN')")`, []string{"ROLE_ADMIN"}},
 	}
 	for _, tt := range tests {
@@ -2072,9 +2074,9 @@ func TestParseRequireRight(t *testing.T) {
 		constants map[string]string
 		expected  []string
 	}{
-		{`("sp:tags:read")`, nil, []string{"sp:tags:read"}},
-		{`({"sp:a", "sp:b"})`, nil, []string{"sp:a", "sp:b"}},
-		{`(Right.READ)`, map[string]string{"READ": "sp:tags:read"}, []string{"sp:tags:read"}},
+		{`("api:tags:read")`, nil, []string{"api:tags:read"}},
+		{`({"api:a", "api:b"})`, nil, []string{"api:a", "api:b"}},
+		{`(Right.READ)`, map[string]string{"READ": "api:tags:read"}, []string{"api:tags:read"}},
 	}
 	for _, tt := range tests {
 		got := parseRequireRight(tt.input, tt.constants)
@@ -2094,7 +2096,7 @@ func TestClassLevelSecurityPropagation(t *testing.T) {
 	src := `package com.example;
 @RestController
 @RequestMapping("/api/v1/reports")
-@PreAuthorize("hasAuthority('sp:reports:read')")
+@PreAuthorize("hasAuthority('api:reports:read')")
 public class ReportsController {
     @GetMapping
     public List<ReportDTO> list() { return null; }
@@ -2117,8 +2119,8 @@ public class ReportsController {
 	}
 
 	for _, op := range result.Operations {
-		if len(op.Security) == 0 || op.Security[0] != "sp:reports:read" {
-			t.Errorf("%s %s: expected class-level security [sp:reports:read], got %v", op.Method, op.Path, op.Security)
+		if len(op.Security) == 0 || op.Security[0] != "api:reports:read" {
+			t.Errorf("%s %s: expected class-level security [api:reports:read], got %v", op.Method, op.Path, op.Security)
 		}
 	}
 }
@@ -2137,7 +2139,7 @@ func TestErrorResponseSchemas(t *testing.T) {
 		Types:   make(map[string]*index.TypeDecl),
 	}
 
-	spec := GenerateSpec(result, SpecConfig{Title: "Test", Version: "1.0.0"})
+	spec := GenerateSpec(result, SpecConfig{Title: "Test", Version: "1.0.0", ErrorSchema: "legacy-error-response"})
 	paths := spec["paths"].(map[string]interface{})
 	testPath := paths["/test"].(map[string]interface{})
 	getOp := testPath["get"].(map[string]interface{})
@@ -2468,7 +2470,7 @@ public class ItemResource {
 		t.Fatal(err)
 	}
 
-	spec := GenerateSpec(result, SpecConfig{Title: "Items", Version: "1.0.0"})
+	spec := GenerateSpec(result, SpecConfig{Title: "Items", Version: "1.0.0", ErrorSchema: "legacy-error-response"})
 	paths := spec["paths"].(map[string]interface{})
 
 	// GET /{id} should have 404
@@ -2543,7 +2545,7 @@ public class ItemController {
 		t.Fatal(err)
 	}
 
-	spec := GenerateSpec(result, SpecConfig{Title: "Items", Version: "1.0.0"})
+	spec := GenerateSpec(result, SpecConfig{Title: "Items", Version: "1.0.0", ErrorSchema: "legacy-error-response"})
 	paths := spec["paths"].(map[string]interface{})
 
 	// POST should have 409
@@ -2877,19 +2879,28 @@ public class BlockModule implements IModule {
 }
 
 func TestCustomPaginationExpansion(t *testing.T) {
-	// Improvement #12: Custom pagination types expanded
 	src := `package com.example;
+public class QueryPagingOptions {
+    private int offset;
+    private int limit;
+}
 @Path("/api/v1/items")
 public class ItemResource {
     @GET
-    public List<String> list(ChroniclePagingOptions paging) {
+    public List<String> list(QueryPagingOptions paging) {
         return null;
     }
 }`
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
 	os.WriteFile(filepath.Join(dir, "src", "ItemResource.java"), []byte(src), 0o644)
-	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{filepath.Join(dir, "src")}})
+	result, err := Extract(Config{
+		RootDir:    dir,
+		SourceDirs: []string{filepath.Join(dir, "src")},
+		Extraction: extractionopts.Options{
+			SignaturePaginationTypes: []string{"QueryPagingOptions"},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4008,7 +4019,7 @@ func keysOfMap(m map[string]interface{}) []string {
 
 // --- Plugin-registered JAX-RS (abstract RestDeployment-style fixture) ---
 
-const atlasPluginSource = `package com.example.api;
+const pluginDeploymentSource = `package com.example.api;
 
 import com.example.framework.Plugin;
 import com.example.framework.PluginConfigurationContext;
@@ -4029,7 +4040,7 @@ public class ExampleServicePlugin implements Plugin {
 }
 `
 
-const atlasApplicationSource = `package com.example.api;
+const primaryRestApplicationSource = `package com.example.api;
 
 public class PrimaryRestApplication extends ExampleRestApplication {
     public PrimaryRestApplication() {
@@ -4038,7 +4049,7 @@ public class PrimaryRestApplication extends ExampleRestApplication {
 }
 `
 
-const atlasApplication2Source = `package com.example.api;
+const secondaryRestApplicationSource = `package com.example.api;
 
 public class SecondaryRestApplication extends ExampleRestApplication {
     public SecondaryRestApplication() {
@@ -4047,7 +4058,7 @@ public class SecondaryRestApplication extends ExampleRestApplication {
 }
 `
 
-const atlasResourceSource = `package com.example.api;
+const primaryResourceSource = `package com.example.api;
 
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
@@ -4076,7 +4087,7 @@ public class PrimaryResource {
 }
 `
 
-const atlasResource2Source = `package com.example.api;
+const relatedResourceSource = `package com.example.api;
 
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -4098,11 +4109,11 @@ public class RelatedResource {
 func TestRestDeploymentBasePath(t *testing.T) {
 	dir := t.TempDir()
 	pkg := filepath.Join(dir, "src", "main", "java", "com", "example", "api")
-	writeTestFile(t, pkg, "ExampleServicePlugin.java", atlasPluginSource)
-	writeTestFile(t, pkg, "PrimaryRestApplication.java", atlasApplicationSource)
-	writeTestFile(t, pkg, "SecondaryRestApplication.java", atlasApplication2Source)
-	writeTestFile(t, pkg, "PrimaryResource.java", atlasResourceSource)
-	writeTestFile(t, pkg, "RelatedResource.java", atlasResource2Source)
+	writeTestFile(t, pkg, "ExampleServicePlugin.java", pluginDeploymentSource)
+	writeTestFile(t, pkg, "PrimaryRestApplication.java", primaryRestApplicationSource)
+	writeTestFile(t, pkg, "SecondaryRestApplication.java", secondaryRestApplicationSource)
+	writeTestFile(t, pkg, "PrimaryResource.java", primaryResourceSource)
+	writeTestFile(t, pkg, "RelatedResource.java", relatedResourceSource)
 
 	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
 	if err != nil {

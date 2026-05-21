@@ -15,7 +15,7 @@ service:
   description: "from config"
   version: "2.1.0"
   language: "go"
-  template: "atlas-go"
+  template: "go-web"
   team: "Platform"
   pathRewrites:
     - from: /internal
@@ -83,7 +83,7 @@ service:
 	if info["x-service-team"] != "Platform" {
 		t.Fatalf("x-service-team = %v", info["x-service-team"])
 	}
-	if info["x-service-template"] != "atlas-go" {
+	if info["x-service-template"] != "go-web" {
 		t.Fatalf("x-service-template = %v", info["x-service-template"])
 	}
 
@@ -120,8 +120,8 @@ func TestExtractProject_UsesOverridesAndNormalizesOutput(t *testing.T) {
 		t.Fatalf("ExtractProject: %v", err)
 	}
 
-	if seen.Template != "atlas-go" {
-		t.Fatalf("template = %q, want atlas-go", seen.Template)
+	if seen.Template != "go-web" {
+		t.Fatalf("template = %q, want go-web", seen.Template)
 	}
 	if seen.Title != "Override API" {
 		t.Fatalf("title = %q", seen.Title)
@@ -192,7 +192,7 @@ func TestExtractProject_ReturnsHelpfulLanguageError(t *testing.T) {
 
 // TestExtractProject_DetectsLanguageMismatch makes sure that when a
 // service claims Java but the repo has go.mod we still run the requested
-// extractor but flag the discrepancy on the result so meridian can log it.
+// extractor but flag the discrepancy on the result so callers can log it.
 func TestExtractProject_DetectsLanguageMismatch(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module test"), 0o644); err != nil {
@@ -201,7 +201,7 @@ func TestExtractProject_DetectsLanguageMismatch(t *testing.T) {
 	res, err := extractProjectWithRunner(ProjectOptions{
 		RootDir:  root,
 		Lang:     "java",
-		Template: "atlas-boot",
+		Template: "java-spring",
 	}, func(opts Options) (*Result, error) {
 		return &Result{
 			SpecMap: map[string]interface{}{
@@ -286,7 +286,7 @@ paths:
 	res, err := extractProjectWithRunner(ProjectOptions{
 		RootDir:             root,
 		Lang:                "go",
-		Template:            "atlas-go",
+		Template:            "go-web",
 		PreferCanonicalSpec: true,
 	}, func(opts Options) (*Result, error) {
 		runnerCalled++

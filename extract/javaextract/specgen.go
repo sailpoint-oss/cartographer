@@ -15,8 +15,9 @@ type SpecConfig struct {
 	Version         string
 	Description     string
 	OpenAPIVersion  string // "3.1" or "3.2"
-	ServiceTemplate string // "atlas-boot" or "atlas"
+	ServiceTemplate string // e.g. "java-spring"
 	TreeShake       bool
+	ErrorSchema     string
 }
 
 // GenerateSpec converts Java extraction results into a complete OpenAPI spec.
@@ -30,6 +31,7 @@ func GenerateSpec(result *Result, cfg SpecConfig) map[string]any {
 		OpenAPIVersion:  cfg.OpenAPIVersion,
 		ServiceTemplate: cfg.ServiceTemplate,
 		TreeShake:       cfg.TreeShake,
+		ErrorSchema:     cfg.ErrorSchema,
 	}, adapter)
 }
 
@@ -250,7 +252,7 @@ func applyJavaFieldAnnotations(f index.FieldDecl, schema map[string]any) {
 }
 
 // scopeDescription generates a human-readable description from an OAuth2 scope name.
-// e.g. "sp:auth-org:create" -> "Create auth-org resources"
+// e.g. "api:resource:create" -> "Create resource"
 func scopeDescription(scope string) string {
 	parts := strings.Split(scope, ":")
 	if len(parts) < 2 {
@@ -302,4 +304,78 @@ func extractAnnotationFirstArg(args string) string {
 		}
 	}
 	return args
+}
+
+// EnrichRequestBodySchema merges @Valid/@NotNull field constraints from the type index.
+func (a *javaAdapter) EnrichRequestBodySchema(typeName string, schema map[string]any, types map[string]*index.TypeDecl) map[string]any {
+	if schema == nil {
+		schema = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	decl := a.FindTypeBySimpleName(types, stripGenericSuffix(typeName))
+	if decl == nil {
+		return schema
+	}
+	props, _ := schema["properties"].(map[string]any)
+	if props == nil {
+		props = map[string]any{}
+		schema["properties"] = props
+	}
+	var required []any
+	for _, f := range decl.Fields {
+		name := f.Name
+		if f.JSONName != "" {
+			name = f.JSONName
+		}
+		prop, ok := props[name].(map[string]any)
+		if !ok {
+			prop = a.ParamTypeToSchema(f.Type)
+			props[name] = prop
+		}
+		applyFieldConstraints(prop, f)
+		if f.Required {
+			required = append(required, name)
+		}
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
+}
+
+func applyFieldConstraints(prop map[string]any, f index.FieldDecl) {
+	if f.Required {
+		// required tracked at object level
+	}
+	for ann, val := range f.Annotations {
+		switch ann {
+		case "NotNull", "NonNull", "NotBlank", "NotEmpty":
+			// object-level required
+		case "Min":
+			if n, err := strconv.Atoi(extractAnnotationFirstArg(val)); err == nil {
+				prop["minimum"] = n
+			}
+		case "Max":
+			if n, err := strconv.Atoi(extractAnnotationFirstArg(val)); err == nil {
+				prop["maximum"] = n
+			}
+		case "Size":
+			if minVal := extractAnnotationNamedParam(val, "min"); minVal != "" {
+				if n, err := strconv.Atoi(minVal); err == nil {
+					prop["minLength"] = n
+				}
+			}
+			if maxVal := extractAnnotationNamedParam(val, "max"); maxVal != "" {
+				if n, err := strconv.Atoi(maxVal); err == nil {
+					prop["maxLength"] = n
+				}
+			}
+		}
+	}
+}
+
+func stripGenericSuffix(name string) string {
+	if idx := strings.Index(name, "<"); idx >= 0 {
+		return name[:idx]
+	}
+	return name
 }

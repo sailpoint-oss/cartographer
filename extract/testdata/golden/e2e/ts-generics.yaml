@@ -1,23 +1,5 @@
 components:
     schemas:
-        ErrorResponse:
-            properties:
-                detailCode:
-                    type: string
-                messages:
-                    items:
-                        properties:
-                            locale:
-                                type: string
-                            localeOrigin:
-                                type: string
-                            text:
-                                type: string
-                        type: object
-                    type: array
-                trackingId:
-                    type: string
-            type: object
         UserDto:
             properties:
                 email:
@@ -49,30 +31,6 @@ paths:
                                     $ref: '#/components/schemas/UserDto'
                                 type: array
                     description: Users
-                "400":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Bad Request - Invalid input parameters
-                "401":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Unauthorized - Authentication required
-                "403":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Forbidden - Insufficient permissions
-                "500":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Internal Server Error
             summary: List Users
             tags:
                 - User
@@ -114,36 +72,6 @@ paths:
                                     - email
                                 type: object
                     description: User created
-                "400":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Bad Request - Invalid input parameters
-                "401":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Unauthorized - Authentication required
-                "403":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Forbidden - Insufficient permissions
-                "409":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Conflict - Resource already exists or state conflict
-                "500":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Internal Server Error
             summary: Create User
             tags:
                 - User
@@ -178,36 +106,6 @@ paths:
                                     - email
                                 type: object
                     description: User
-                "400":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Bad Request - Invalid input parameters
-                "401":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Unauthorized - Authentication required
-                "403":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Forbidden - Insufficient permissions
-                "404":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Not Found - Resource does not exist
-                "500":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ErrorResponse'
-                    description: Internal Server Error
             summary: Get User
             tags:
                 - User

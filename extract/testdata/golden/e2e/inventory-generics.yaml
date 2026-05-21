@@ -1,0 +1,135 @@
+components:
+    schemas:
+        ConfigItem:
+            properties:
+                key:
+                    type: string
+                value:
+                    type: string
+            type: object
+        ServiceAPI:
+            properties:
+                active:
+                    type: boolean
+                id:
+                    type: string
+                name:
+                    type: string
+                version:
+                    type: string
+            type: object
+info:
+    title: Inventory
+    version: "1.0"
+    x-cartographer-diagnostics:
+        controllers: 1
+        operations: 4
+        unmappedHandlerMethods: 0
+openapi: 3.0.3
+paths:
+    /api/v1/inventory/configs:
+        get:
+            description: Retrieve a list of Configs.
+            operationId: getConfigs
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                additionalProperties:
+                                    items:
+                                        $ref: '#/components/schemas/ConfigItem'
+                                    type: array
+                                type: object
+                    description: List of Configs
+            summary: List Configs
+            tags:
+                - Inventory
+    /api/v1/inventory/services:
+        get:
+            description: Retrieve a list of Services.
+            operationId: listServices
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                items:
+                                    $ref: '#/components/schemas/ServiceAPI'
+                                type: array
+                    description: List of Services
+            summary: List Services
+            tags:
+                - Inventory
+        post:
+            description: Create a new Service.
+            operationId: createService
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                active:
+                                    type: boolean
+                                id:
+                                    type: string
+                                name:
+                                    type: string
+                                version:
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    active:
+                                        type: boolean
+                                    id:
+                                        type: string
+                                    name:
+                                        type: string
+                                    version:
+                                        type: string
+                                type: object
+                    description: Service created
+            summary: Create Service
+            tags:
+                - Inventory
+    /api/v1/inventory/services/{id}:
+        get:
+            description: Retrieve a single Service by its unique identifier.
+            operationId: getService
+            parameters:
+                - description: The unique identifier of the resource.
+                  example: 2c91808a7813090a017814121919ecca
+                  in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+                  style: simple
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    active:
+                                        type: boolean
+                                    id:
+                                        type: string
+                                    name:
+                                        type: string
+                                    version:
+                                        type: string
+                                type: object
+                    description: Service
+            summary: Get Service
+            tags:
+                - Inventory
+tags:
+    - description: Operations related to Inventory
+      name: Inventory

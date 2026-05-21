@@ -71,7 +71,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	} else {
 		langComment = " (could not auto-detect)"
 		lang = "go"
-		template = "atlas-go"
+		template = extraction.TemplateGoWeb
 	}
 
 	name := initName

@@ -15,7 +15,7 @@ service:
   team: "Platform"
   slack: "#platform"
   language: "go"
-  template: "atlas-go"
+  template: "go-web"
   contact:
     name: "Dev Team"
     url: "https://example.com"
@@ -67,7 +67,7 @@ service:
 	if svc.Language != "go" {
 		t.Errorf("language = %v", svc.Language)
 	}
-	if svc.Template != "atlas-go" {
+	if svc.Template != "go-web" {
 		t.Errorf("template = %v", svc.Template)
 	}
 
@@ -162,7 +162,7 @@ func TestDetectLanguage_Go(t *testing.T) {
 	}
 
 	lang, tmpl := DetectLanguage(dir)
-	if lang != "go" || tmpl != "atlas-go" {
+	if lang != "go" || tmpl != "go-web" {
 		t.Errorf("lang=%v, template=%v", lang, tmpl)
 	}
 }
@@ -174,7 +174,7 @@ func TestDetectLanguage_Java(t *testing.T) {
 	}
 
 	lang, tmpl := DetectLanguage(dir)
-	if lang != "java" || tmpl != "atlas-boot" {
+	if lang != "java" || tmpl != "java-spring" {
 		t.Errorf("lang=%v, template=%v", lang, tmpl)
 	}
 }
@@ -187,7 +187,7 @@ func TestDetectLanguage_TypeScript(t *testing.T) {
 	}
 
 	lang, tmpl := DetectLanguage(dir)
-	if lang != "typescript" || tmpl != "saas-atlasjs" {
+	if lang != "typescript" || tmpl != "typescript-node" {
 		t.Errorf("lang=%v, template=%v", lang, tmpl)
 	}
 }
@@ -209,7 +209,7 @@ func TestDetectLanguage_Python(t *testing.T) {
 				t.Fatal(err)
 			}
 			lang, tmpl := DetectLanguage(dir)
-			if lang != "python" || tmpl != "atlas-python" {
+			if lang != "python" || tmpl != "python-fastapi" {
 				t.Errorf("[%s] lang=%v, template=%v", name, lang, tmpl)
 			}
 		})
@@ -228,7 +228,7 @@ func TestDetectLanguage_GoBeatsPython(t *testing.T) {
 		t.Fatal(err)
 	}
 	lang, tmpl := DetectLanguage(dir)
-	if lang != "go" || tmpl != "atlas-go" {
+	if lang != "go" || tmpl != "go-web" {
 		t.Errorf("expected go to win, got lang=%v, template=%v", lang, tmpl)
 	}
 }
@@ -245,7 +245,7 @@ func TestDetectLanguage_NestedGoModule(t *testing.T) {
 		t.Fatal(err)
 	}
 	lang, tmpl := DetectLanguage(dir)
-	if lang != "go" || tmpl != "atlas-go" {
+	if lang != "go" || tmpl != "go-web" {
 		t.Errorf("nested go.mod not detected: lang=%v, template=%v", lang, tmpl)
 	}
 
@@ -257,7 +257,7 @@ func TestDetectLanguage_NestedGoModule(t *testing.T) {
 }
 
 // TestDetectLanguage_CSharp covers the .NET / Das service layout so
-// meridian can surface an explicit language-unsupported status.
+// downstream orchestration can surface an explicit language-unsupported status.
 func TestDetectLanguage_CSharp(t *testing.T) {
 	t.Run("Directory.Build.props", func(t *testing.T) {
 		dir := t.TempDir()
@@ -265,7 +265,7 @@ func TestDetectLanguage_CSharp(t *testing.T) {
 			t.Fatal(err)
 		}
 		lang, tmpl := DetectLanguage(dir)
-		if lang != "csharp" || tmpl != "atlas-csharp" {
+		if lang != "csharp" || tmpl != "csharp-web" {
 			t.Errorf("lang=%v, template=%v", lang, tmpl)
 		}
 	})
@@ -280,7 +280,7 @@ func TestDetectLanguage_CSharp(t *testing.T) {
 			t.Fatal(err)
 		}
 		lang, tmpl := DetectLanguage(dir)
-		if lang != "csharp" || tmpl != "atlas-csharp" {
+		if lang != "csharp" || tmpl != "csharp-web" {
 			t.Errorf("lang=%v, template=%v", lang, tmpl)
 		}
 	})
@@ -307,7 +307,7 @@ func TestDetectLanguageSignals_ReportsEverySignal(t *testing.T) {
 }
 
 func TestDetectLanguageSignals_MismatchDetection(t *testing.T) {
-	// Claim "java" on a repo that's clearly Go (mislabeled atlas-boot service).
+	// Claim "java" on a repo that's clearly Go (mislabeled java-spring service).
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0o644); err != nil {
 		t.Fatal(err)
@@ -322,12 +322,12 @@ func TestDetectLanguageSignals_MismatchDetection(t *testing.T) {
 }
 
 func TestGenerateInitYAML(t *testing.T) {
-	output := GenerateInitYAML("Test Service", "go", "atlas-go", " (auto-detected: go)")
+	output := GenerateInitYAML("Test Service", "go", "go-web", " (auto-detected: go)")
 
 	for _, needle := range []string{
 		`name: "Test Service"`,
 		`language: "go"`,
-		`template: "atlas-go"`,
+		`template: "go-web"`,
 		"pathRewrites",
 		"excludePaths",
 		"contact",
@@ -365,7 +365,7 @@ func TestApplyConfig_InjectsMetadataAndShaping(t *testing.T) {
 		},
 	}
 
-	if !ApplyConfig(specMap, cfg, "atlas-go") {
+	if !ApplyConfig(specMap, cfg, "go-web") {
 		t.Fatal("expected config application to report changes")
 	}
 
@@ -379,7 +379,7 @@ func TestApplyConfig_InjectsMetadataAndShaping(t *testing.T) {
 	if info["x-service-slack"] != "#team-a" {
 		t.Errorf("x-service-slack = %v", info["x-service-slack"])
 	}
-	if info["x-service-template"] != "atlas-go" {
+	if info["x-service-template"] != "go-web" {
 		t.Errorf("x-service-template = %v", info["x-service-template"])
 	}
 	if info["termsOfService"] != "https://example.com/tos" {

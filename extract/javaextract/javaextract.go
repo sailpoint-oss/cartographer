@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sailpoint-oss/cartographer/extract/extractionopts"
 	"github.com/sailpoint-oss/cartographer/extract/index"
 	"github.com/sailpoint-oss/cartographer/extract/parser"
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
@@ -26,13 +27,22 @@ type Config struct {
 	SourceDirs []string
 	Classpath  string
 	Verbose    bool
+	Extraction extractionopts.Options
 }
 
 // Result holds the extraction result.
 type Result struct {
-	Operations []*Operation
-	Schemas    map[string]interface{}
-	Types      map[string]*index.TypeDecl
+	Operations  []*Operation
+	Schemas     map[string]interface{}
+	Types       map[string]*index.TypeDecl
+	Diagnostics map[string]any
+}
+
+// ErrorResponseSchemaEntry ties an HTTP status to a concrete response schema type.
+type ErrorResponseSchemaEntry struct {
+	StatusCode  int
+	SchemaType  string
+	Description string
 }
 
 // AnnotatedResponse represents a response declared via @ApiResponse annotation.
@@ -62,8 +72,9 @@ type Operation struct {
 	ConsumesContentType    string   // from @Consumes or consumes= attribute
 	ProducesContentType    string   // from @Produces or produces= attribute
 	ReturnDescription      string
-	ErrorResponses         map[int]string      // status code -> description from @throws
-	AnnotatedResponses     []AnnotatedResponse // from @ApiResponse annotations
+	ErrorResponses         map[int]string                // status code -> description from @throws
+	ErrorResponseSchemas   []ErrorResponseSchemaEntry    // typed error bodies from advice/handlers
+	AnnotatedResponses     []AnnotatedResponse           // from @ApiResponse annotations
 	ResponseHeaders        map[string]string   // header name -> description (e.g. X-Total-Count)
 	NullableResponse       bool                // from @Nullable or Optional<T> return
 	RateLimited            bool                // from @Metered, @Timed, @RateLimited
@@ -102,9 +113,15 @@ type extractContext struct {
 	classPaths        map[string]string // class simple name -> @RequestMapping/@Path base path
 	idx               *index.Index
 	verbose           bool
-	exceptionHandlers map[string]int // exception class name -> HTTP status code (from @ControllerAdvice / ExceptionMapper)
+	exceptionHandlers       map[string]int    // exception class name -> HTTP status code (from @ControllerAdvice / ExceptionMapper)
+	exceptionHandlerSchemas map[string]string // exception class name -> response schema type
+	methodBodies            map[string]map[string]string
+	signaturePaginationTypes map[string]bool
 
-	// Atlas plugin-registered JAX-RS applications.
+	controllerCount          int
+	unmappedHandlerMethods   int
+
+	// Plugin-registered JAX-RS applications.
 	// appBasePaths maps an Application class simple name to the context path registered
 	// via `new RestDeployment("/path", AppClass.class)`. addedBy records which class
 	// registered a given target via `add(Target.class)` (or `register(...)`) in its
@@ -138,12 +155,15 @@ func Extract(cfg Config) (*Result, error) {
 
 	// Build extraction context: constant table + class path map
 	ctx := &extractContext{
-		constants:         make(map[string]string),
-		classPaths:        make(map[string]string),
-		idx:               idx,
-		verbose:           cfg.Verbose,
-		exceptionHandlers: make(map[string]int),
-		appBasePaths:      make(map[string][]string),
+		constants:                make(map[string]string),
+		classPaths:               make(map[string]string),
+		idx:                      idx,
+		verbose:                  cfg.Verbose,
+		exceptionHandlers:        make(map[string]int),
+		exceptionHandlerSchemas:  make(map[string]string),
+		methodBodies:             make(map[string]map[string]string),
+		signaturePaginationTypes: cfg.Extraction.SignaturePaginationSet(),
+		appBasePaths:             make(map[string][]string),
 		addedBy:           make(map[string][]string),
 		resourceBasePaths: make(map[string][]string),
 	}
@@ -153,6 +173,14 @@ func Extract(cfg Config) (*Result, error) {
 	resolveConstants(ctx.constants)
 	resolvePluginDeployments(ctx)
 	resolveSubResourceLocators(pool, dirs, ctx)
+
+	// Index method bodies across all sources before operation extraction so
+	// inherited/delegated response helpers resolve regardless of file walk order.
+	for _, dir := range dirs {
+		if err := indexMethodBodiesInDir(pool, dir, ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	// Now extract operations from controller/resource classes
 	result := &Result{
@@ -166,6 +194,12 @@ func Extract(cfg Config) (*Result, error) {
 			return nil, err
 		}
 		result.Operations = append(result.Operations, ops...)
+	}
+
+	result.Diagnostics = map[string]any{
+		"controllers":            ctx.controllerCount,
+		"operations":             len(result.Operations),
+		"unmappedHandlerMethods": ctx.unmappedHandlerMethods,
 	}
 
 	// Convert indexed types to schemas
@@ -223,7 +257,7 @@ func buildConstantTable(pool *parser.Pool, rootDir string, ctx *extractContext) 
 	})
 }
 
-// collectFilePluginDeployments records Atlas plugin-registered JAX-RS Application
+// collectFilePluginDeployments records plugin-registered JAX-RS Application
 // deployments and the resource classes each Application registers, so we can
 // resolve base paths for JAX-RS resources that rely on plugin-level routing
 // (e.g. `@Path("")` on the class, with the prefix supplied by
@@ -815,20 +849,67 @@ func extractOperations(pool *parser.Pool, ctx *extractContext, rootDir string) (
 
 // extractFileOperations extracts operations from a single Java source file.
 func extractFileOperations(root *tree_sitter.Node, source []byte, filePath string, ctx *extractContext) []*Operation {
-	var ops []*Operation
+	return walkCompilationUnit(root, source, filePath, ctx)
+}
 
-	// Find class declarations
+func indexMethodBodiesInDir(pool *parser.Pool, dir string, ctx *extractContext) error {
+	return filepath.WalkDir(dir, func(path string, info os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			base := info.Name()
+			if base == "node_modules" || base == ".git" || base == "build" || base == "target" || base == "test" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".java") {
+			return nil
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		tree, err := pool.Parse("java", source)
+		if err != nil {
+			return nil
+		}
+		defer tree.Close()
+		indexMethodBodiesInUnit(tree.RootNode(), source, ctx)
+		return nil
+	})
+}
+
+func indexMethodBodiesInUnit(root *tree_sitter.Node, source []byte, ctx *extractContext) {
 	for i := uint(0); i < root.ChildCount(); i++ {
 		child := root.Child(i)
-		if child.Kind() != "class_declaration" {
-			continue
+		switch child.Kind() {
+		case "class_declaration":
+			indexMethodBodiesInClass(child, source, ctx)
 		}
-
-		classOps := extractClassOperations(child, source, filePath, ctx)
-		ops = append(ops, classOps...)
 	}
+}
 
-	return ops
+func indexMethodBodiesInClass(classNode *tree_sitter.Node, source []byte, ctx *extractContext) {
+	className := extractClassName(classNode, source)
+	indexClassMethods(classNode, source, className, ctx)
+	var classBody *tree_sitter.Node
+	for i := uint(0); i < classNode.ChildCount(); i++ {
+		if classNode.Child(i).Kind() == "class_body" {
+			classBody = classNode.Child(i)
+			break
+		}
+	}
+	if classBody == nil {
+		return
+	}
+	for i := uint(0); i < classBody.ChildCount(); i++ {
+		nested := classBody.Child(i)
+		if nested.Kind() == "class_declaration" {
+			indexMethodBodiesInClass(nested, source, ctx)
+		}
+	}
 }
 
 // extractExceptionHandlerClasses scans for @ControllerAdvice and ExceptionMapper classes
@@ -935,8 +1016,16 @@ func extractControllerAdviceHandlers(classNode *tree_sitter.Node, source []byte,
 		}
 
 		if statusCode > 0 {
+			returnType := extractMethodReturnType(method, source)
+			schemaType := extractGenericFromReturn(returnType)
+			if schemaType == "" {
+				schemaType = stripGeneric(returnType)
+			}
 			for _, exType := range exceptionTypes {
 				ctx.exceptionHandlers[exType] = statusCode
+				if schemaType != "" && schemaType != "?" && schemaType != "Object" {
+					ctx.exceptionHandlerSchemas[exType] = schemaType
+				}
 			}
 		}
 	}
@@ -1033,6 +1122,7 @@ func extractClassOperations(classNode *tree_sitter.Node, source []byte, filePath
 	if framework == "" || classHidden {
 		return nil
 	}
+	ctx.controllerCount++
 
 	// Check for parent class base path (C3: inheritance)
 	superClass := extractSuperClassName(classNode, source)
@@ -1051,8 +1141,8 @@ func extractClassOperations(classNode *tree_sitter.Node, source []byte, filePath
 		}
 	}
 
-	// Detect base class for pagination parameter inheritance
-	baseClassParamSet := baseClassPaginationParams(superClass)
+	// Index methods on this class for callee tracing.
+	indexClassMethods(classNode, source, className, ctx)
 
 	var ops []*Operation
 
@@ -1078,14 +1168,12 @@ func extractClassOperations(classNode *tree_sitter.Node, source []byte, filePath
 		}
 
 		for _, effectiveBasePath := range basePaths {
-			op := extractMethodOperation(child, source, effectiveBasePath, framework, classTags, classSec, ctx)
+			op := extractMethodOperation(child, source, effectiveBasePath, framework, classTags, classSec, ctx, className, superClass)
 			if op != nil {
 				op.File = filePath
-				// Phase 5: Inject base class pagination params for list endpoints
-				if len(baseClassParamSet) > 0 && isListEndpoint(op) {
-					op.Parameters = injectBaseClassParams(op.Parameters, baseClassParamSet)
-				}
 				ops = append(ops, op)
+			} else if methodDeclHasHTTPMapping(child, source, framework) {
+				ctx.unmappedHandlerMethods++
 			}
 		}
 	}
@@ -1260,7 +1348,7 @@ func extractBalancedParens(text string) string {
 }
 
 // extractMethodOperation extracts an operation from a method declaration.
-func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePath, framework string, classTags []string, classSecurity []string, ctx *extractContext) *Operation {
+func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePath, framework string, classTags []string, classSecurity []string, ctx *extractContext, className, superClass string) *Operation {
 	httpMethod := ""
 	methodPath := ""
 	methodName := ""
@@ -1421,7 +1509,7 @@ func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePat
 	}
 
 	// Analyze method body for response type, status code, headers, and thrown exceptions (H1, H4)
-	bodyResponseType, bodyStatusCode, bodyHeaders, bodyExceptions := analyzeMethodBody(methodNode, source)
+	bodyResponseType, bodyStatusCode, bodyHeaders, bodyExceptions := analyzeMethodBody(methodNode, source, ctx, className, superClass)
 
 	// For JAX-RS Response return type, use body-inferred type (H1)
 	if returnType == "Response" && bodyResponseType != "" {
@@ -1515,6 +1603,39 @@ func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePat
 		}
 	}
 
+	var errorResponseSchemas []ErrorResponseSchemaEntry
+	if len(bodyExceptions) > 0 || len(jdoc.Throws) > 0 {
+		seen := make(map[int]bool)
+		addSchema := func(exName string, code int) {
+			if code <= 0 || seen[code] {
+				return
+			}
+			if schemaType, ok := ctx.exceptionHandlerSchemas[exName]; ok && schemaType != "" {
+				seen[code] = true
+				errorResponseSchemas = append(errorResponseSchemas, ErrorResponseSchemaEntry{
+					StatusCode:  code,
+					SchemaType:  schemaType,
+					Description: getExceptionDescription(exName, code),
+				})
+			}
+		}
+		for _, exName := range bodyExceptions {
+			code := 0
+			if c, ok := ctx.exceptionHandlers[exName]; ok {
+				code = c
+			}
+			if code == 0 {
+				code = exceptionToStatusCode(exName)
+			}
+			addSchema(exName, code)
+		}
+		for exClass := range jdoc.Throws {
+			if code, ok := ctx.exceptionHandlers[exClass]; ok {
+				addSchema(exClass, code)
+			}
+		}
+	}
+
 	// Capture source location from method node
 	startPos := methodNode.StartPosition()
 
@@ -1537,6 +1658,7 @@ func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePat
 		ProducesContentType:    producesContentType,
 		ReturnDescription:      jdoc.Return,
 		ErrorResponses:         errorResponses,
+		ErrorResponseSchemas:   errorResponseSchemas,
 		AnnotatedResponses:     annotatedResponses,
 		ResponseHeaders:        bodyHeaders,
 		NullableResponse:       nullableResponse,
@@ -1814,7 +1936,7 @@ func splitAnnotationArgs(args string) []string {
 
 // analyzeMethodBody scans a method body for Response builder patterns, status codes,
 // response headers, and thrown exceptions.
-func analyzeMethodBody(methodNode *tree_sitter.Node, source []byte) (responseType string, statusCode int, headers map[string]string, exceptions []string) {
+func analyzeMethodBody(methodNode *tree_sitter.Node, source []byte, ctx *extractContext, className, superClass string) (responseType string, statusCode int, headers map[string]string, exceptions []string) {
 	var body *tree_sitter.Node
 	for i := uint(0); i < methodNode.ChildCount(); i++ {
 		child := methodNode.Child(i)
@@ -1860,10 +1982,20 @@ func analyzeMethodBody(methodNode *tree_sitter.Node, source []byte) (responseTyp
 	// Infer response entity type from Response.ok(entity) or .entity(dto)
 	responseType = extractResponseEntityType(bodyText)
 
-	// Improvement #2: Detect response headers from builder chains
-	headers = extractResponseHeaders(bodyText)
+	constants := ctx.constants
+	delegatedHeaders, delegatedStatus := mergeDelegatedResponseAnalysis(bodyText, className, superClass, ctx, constants)
+	headers = extractResponseHeadersFromText(bodyText, constants)
+	for k, v := range delegatedHeaders {
+		if headers == nil {
+			headers = make(map[string]string)
+		}
+		headers[k] = v
+	}
+	if statusCode == 0 && delegatedStatus > 0 {
+		statusCode = delegatedStatus
+	}
 
-	// Improvement #3: Detect thrown exceptions for error status mapping
+	// Detect thrown exceptions for error status mapping
 	exceptions = extractThrownExceptions(bodyText)
 
 	return
@@ -2180,9 +2312,8 @@ func extractMethodParameters(paramsNode *tree_sitter.Node, source []byte, framew
 				params = append(params, expandPageableParameters()...)
 				continue
 			}
-			// Improvement #12: Expand custom pagination types
-			if isCustomPaginationType(param.Type) {
-				params = append(params, expandCustomPaginationParameters(param.Type)...)
+			if expanded := expandSignaturePaginationType(param.Type, ctx.idx, ctx.signaturePaginationTypes); len(expanded) > 0 {
+				params = append(params, expanded...)
 				continue
 			}
 			// Improvement #9: @BeanParam expansion for JAX-RS
@@ -2209,65 +2340,10 @@ func expandPageableParameters() []*Parameter {
 	}
 }
 
-// Improvement #12: Custom pagination type recognition.
-var customPaginationTypes = map[string]bool{
-	"ChroniclePagingOptions": true,
-	"SimpleQueryOptions":     true,
-	"AmsQueryOptions":        true,
-	"PagingOptions":          true,
-	"QueryOptions":           true,
-}
-
-// isCustomPaginationType checks if a type is a known custom pagination type.
-func isCustomPaginationType(typeName string) bool {
-	return customPaginationTypes[typeName]
-}
-
-// expandCustomPaginationParameters expands a custom pagination type to standard offset/limit params.
+// expandCustomPaginationParameters is deprecated; use expandSignaturePaginationType.
 func expandCustomPaginationParameters(typeName string) []*Parameter {
-	return []*Parameter{
-		{Name: "offset", In: "query", Type: "int", Required: false, Description: "Start index of results", DefaultValue: "0"},
-		{Name: "limit", In: "query", Type: "int", Required: false, Description: "Maximum number of results to return", DefaultValue: "250"},
-	}
-}
-
-// baseClassPaginationParams returns standard pagination parameters for known base classes.
-func baseClassPaginationParams(superClassName string) []*Parameter {
-	switch superClassName {
-	case "AtlasBaseV3Resource", "AtlasBaseResource", "BaseV3Resource":
-		return []*Parameter{
-			{Name: "offset", In: "query", Type: "int", Required: false, Description: "Offset into the full result set. Usually specified with `limit` to paginate through the results.", DefaultValue: "0"},
-			{Name: "limit", In: "query", Type: "int", Required: false, Description: "Max number of results to return.", DefaultValue: "250"},
-			{Name: "count", In: "query", Type: "boolean", Required: false, Description: "If `true`, include the total result count in the response headers."},
-			{Name: "filters", In: "query", Type: "String", Required: false, Description: "Filter expression (e.g. `name eq \"value\"`)"},
-			{Name: "sorters", In: "query", Type: "String", Required: false, Description: "Comma-separated sort fields (e.g. `name,-created`)"},
-		}
-	case "BaseListResource":
-		return []*Parameter{
-			{Name: "offset", In: "query", Type: "int", Required: false, Description: "Offset into the full result set. Usually specified with `limit` to paginate through the results.", DefaultValue: "0"},
-			{Name: "limit", In: "query", Type: "int", Required: false, Description: "Max number of results to return.", DefaultValue: "250"},
-		}
-	}
+	_ = typeName
 	return nil
-}
-
-// isListEndpoint checks if an operation is a GET on a collection (no trailing path param).
-func isListEndpoint(op *Operation) bool {
-	return strings.ToUpper(op.Method) == "GET" && !strings.HasSuffix(op.Path, "}")
-}
-
-// injectBaseClassParams adds base class params that aren't already present on the operation.
-func injectBaseClassParams(existing []*Parameter, baseParams []*Parameter) []*Parameter {
-	existingNames := make(map[string]bool)
-	for _, p := range existing {
-		existingNames[p.Name] = true
-	}
-	for _, bp := range baseParams {
-		if !existingNames[bp.Name] {
-			existing = append(existing, bp)
-		}
-	}
-	return existing
 }
 
 // Improvement #9: expandBeanParam resolves a @BeanParam type from the index and expands
@@ -2631,6 +2707,13 @@ func extractAnnotation(ann *tree_sitter.Node, source []byte) (string, string) {
 		switch child.Kind() {
 		case "identifier":
 			name = child.Utf8Text(source)
+		case "scoped_identifier":
+			full := child.Utf8Text(source)
+			if dot := strings.LastIndex(full, "."); dot >= 0 {
+				name = full[dot+1:]
+			} else {
+				name = full
+			}
 		case "annotation_argument_list":
 			args = child.Utf8Text(source)
 		}

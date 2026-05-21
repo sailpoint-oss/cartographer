@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sailpoint-oss/cartographer/extract/extractionopts"
 )
 
 // ProjectOptions configures a service-local extraction run with optional
@@ -26,13 +28,28 @@ type ProjectOptions struct {
 	// so library modules that do publish a spec still show up.
 	Kind string
 	// PreferCanonicalSpec tells ExtractProject to auto-discover an
-	// in-repo canonical spec (sailpoint-api.yaml, docs/swagger.yaml,
+	// in-repo canonical spec (openapi.yaml, docs/swagger.yaml,
 	// openapi.yaml, ...) and use it in place of source extraction when
 	// one is found. When no canonical spec is found source extraction
 	// runs as usual. Use this from batch pipelines that want the
 	// passthrough behaviour without the caller having to probe for
 	// files themselves.
 	PreferCanonicalSpec bool
+	// Extraction optionally overrides cartographer.yaml extraction settings.
+	Extraction extractionopts.Options
+}
+
+func mergeExtractionOptions(cfg extractionopts.Options, override extractionopts.Options) extractionopts.Options {
+	if override.ErrorSchema != "" {
+		cfg.ErrorSchema = override.ErrorSchema
+	}
+	if len(override.SignaturePaginationTypes) > 0 {
+		cfg.SignaturePaginationTypes = override.SignaturePaginationTypes
+	}
+	if override.MergeCoLocatedOpenAPI {
+		cfg.MergeCoLocatedOpenAPI = true
+	}
+	return cfg
 }
 
 // ProjectResult captures the effective extraction settings after config
@@ -139,6 +156,7 @@ func extractProjectWithRunner(opts ProjectOptions, runner func(Options) (*Result
 		Description:      description,
 		Verbose:          opts.Verbose,
 		UseCanonicalSpec: opts.PreferCanonicalSpec,
+		Extraction:       mergeExtractionOptions(cfg.Service.Extraction.Options(), opts.Extraction),
 	}
 
 	// Non-REST services (workers, libraries, gateways) never have

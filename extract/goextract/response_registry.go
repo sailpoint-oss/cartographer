@@ -43,7 +43,7 @@ func (rr *ResponseRegistry) registerWebErrorType() {
 	// web.Error structure
 	webError := &ResponseSchema{
 		TypeName:    "Error",
-		Package:     "github.com/sailpoint/atlas-go/v2/atlas/web",
+		Package:     FrameworkWebPackagePath,
 		ContentType: "application/json",
 		Description: "Standard API error response",
 		Fields: []FieldInfo{
@@ -68,7 +68,7 @@ func (rr *ResponseRegistry) registerWebErrorType() {
 		},
 	}
 
-	rr.schemas["github.com/sailpoint/atlas-go/v2/atlas/web.Error"] = webError
+	rr.schemas[FrameworkWebPackagePath+".Error"] = webError
 	rr.schemas["web.Error"] = webError
 }
 

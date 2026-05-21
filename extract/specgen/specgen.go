@@ -1,7 +1,7 @@
 // Copyright (c) 2020-2025. Sailpoint Technologies, Inc. All rights reserved.
 
 // Package specgen converts extracted metadata into an OpenAPI specification.
-// Ported from Atlas-Go/main.go.
+// OpenAPI spec generation from extracted Go handler metadata.
 package specgen
 
 import (
@@ -1024,7 +1024,7 @@ func buildOperation(op *goextract.OperationInfo, schemaNameNormalizer *goextract
 		for i, l := range op.UserLevels {
 			levels[i] = l
 		}
-		operation["x-sailpoint-userLevels"] = levels
+		operation["x-user-levels"] = levels
 	}
 
 	return operation

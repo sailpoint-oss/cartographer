@@ -239,7 +239,7 @@ func TestToOpenAPISchema_Map(t *testing.T) {
 }
 
 func TestToOpenAPISchema_ResponseEntityListServiceAPI(t *testing.T) {
-	// This is the Chronicle bug case
+	// This is the generic list response bug case
 	schema := Parse("ResponseEntity<List<ServiceAPI>>").ToOpenAPISchema(nil)
 	if schema["type"] != "array" {
 		t.Fatalf("expected array type, got %v", schema)
@@ -305,8 +305,8 @@ func TestToOpenAPISchema_WildcardExtends(t *testing.T) {
 }
 
 func TestToOpenAPISchema_GenericRef(t *testing.T) {
-	schema := Parse("ExportedObject<Foo>").ToOpenAPISchema(nil)
-	if schema["$ref"] != "#/components/schemas/ExportedObjectFoo" {
+	schema := Parse("WrappedRecord<Foo>").ToOpenAPISchema(nil)
+	if schema["$ref"] != "#/components/schemas/WrappedRecordFoo" {
 		t.Errorf("$ref = %v", schema["$ref"])
 	}
 }
@@ -321,7 +321,7 @@ func TestCollectTypeRefs(t *testing.T) {
 		{"List<User>", map[string]bool{"User": true}},
 		{"ResponseEntity<List<ServiceAPI>>", map[string]bool{"ServiceAPI": true}},
 		{"Map<String, List<User>>", map[string]bool{"User": true}},
-		{"ExportedObject<Foo>", map[string]bool{"ExportedObjectFoo": true, "Foo": true}},
+		{"WrappedRecord<Foo>", map[string]bool{"WrappedRecordFoo": true, "Foo": true}},
 	}
 	for _, tt := range tests {
 		refs := make(map[string]bool)

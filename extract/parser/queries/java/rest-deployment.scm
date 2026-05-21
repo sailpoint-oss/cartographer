@@ -1,4 +1,4 @@
-;; Tree-sitter queries for Atlas-style plugin-registered JAX-RS applications.
+;; Tree-sitter queries for plugin-registered JAX-RS applications.
 ;; Detects:
 ;;   new RestDeployment("/base/path", AppClass.class)
 ;;   addDeployment(new RestDeployment("/path", App.class))

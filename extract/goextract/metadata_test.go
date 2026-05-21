@@ -236,7 +236,7 @@ func TestSimplifyTypeName(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"github.com/sailpoint/pkg.Type", "Type"},
+		{"example.com/acme/pkg.Type", "Type"},
 		{"Type", "Type"},
 		{"pkg.Type", "Type"},
 		{"", ""},

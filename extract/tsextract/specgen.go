@@ -17,6 +17,7 @@ type SpecConfig struct {
 	OpenAPIVersion  string // "3.1" or "3.2"
 	ServiceTemplate string
 	TreeShake       bool
+	ErrorSchema     string
 }
 
 // GenerateSpec converts TypeScript extraction results into a complete OpenAPI spec.
@@ -30,6 +31,7 @@ func GenerateSpec(result *Result, cfg SpecConfig) map[string]any {
 		OpenAPIVersion:  cfg.OpenAPIVersion,
 		ServiceTemplate: cfg.ServiceTemplate,
 		TreeShake:       cfg.TreeShake,
+		ErrorSchema:     cfg.ErrorSchema,
 	}, adapter)
 }
 

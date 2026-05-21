@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sailpoint-oss/cartographer/extract/csharpextract"
+	"github.com/sailpoint-oss/cartographer/extract/extractionopts"
 	"github.com/sailpoint-oss/cartographer/extract/goextract"
 	"github.com/sailpoint-oss/cartographer/extract/javaextract"
 	"github.com/sailpoint-oss/cartographer/extract/pythonextract"
@@ -30,15 +31,16 @@ type Options struct {
 	Version     string
 	Description string
 	Verbose     bool
+	Extraction  extractionopts.Options
 	// OverrideSpecPath, when non-empty, causes Extract to skip source
 	// extraction entirely and load the given file as the spec. The file
 	// may be OpenAPI 3 (used as-is) or Swagger 2 (auto-converted via
 	// the in-house structural converter in canonical.go). This is how
-	// meridian forwards an in-repo sailpoint-api.yaml / docs/swagger.yaml
+	// callers may forward an in-repo openapi.yaml / docs/swagger.yaml
 	// without re-parsing sources.
 	OverrideSpecPath string
 	// UseCanonicalSpec, when true, causes Extract to auto-discover an
-	// in-repo canonical spec (sailpoint-api.yaml, docs/swagger.yaml, etc.)
+	// in-repo canonical spec (openapi.yaml, docs/swagger.yaml, etc.)
 	// before falling back to source extraction. When a canonical spec is
 	// found the Result's Source field is populated accordingly.
 	UseCanonicalSpec bool
@@ -118,15 +120,15 @@ func Extract(opts Options) (*Result, error) {
 func InferTemplate(lang string) string {
 	switch lang {
 	case "go":
-		return "atlas-go"
+		return TemplateGoWeb
 	case "java":
-		return "atlas-boot"
+		return TemplateJavaSpring
 	case "typescript", "ts":
-		return "saas-atlasjs"
+		return TemplateTypeScriptNode
 	case "python", "py":
-		return "atlas-python"
+		return TemplatePythonFastAPI
 	case "csharp", "cs", "dotnet":
-		return "atlas-csharp"
+		return TemplateCSharpWeb
 	default:
 		return ""
 	}
@@ -188,7 +190,7 @@ func FindTypeScriptSourceDirs(root string) []string {
 
 // FindPythonSourceDirs finds conventional Python source directories.
 //
-// Atlas-python services generally follow one of these layouts:
+// Python services generally follow one of these layouts:
 //
 //   - src-layout              (pyproject.toml + src/<pkg>/)
 //   - flat layout             (pyproject.toml + <pkg>/)
@@ -349,6 +351,7 @@ func doJavaExtract(opts Options) (*Result, error) {
 		RootDir:    opts.RootDir,
 		SourceDirs: sourceDirs,
 		Verbose:    opts.Verbose,
+		Extraction: opts.Extraction,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("java extraction: %w", err)
@@ -361,6 +364,7 @@ func doJavaExtract(opts Options) (*Result, error) {
 		OpenAPIVersion:  "3.2",
 		ServiceTemplate: opts.Template,
 		TreeShake:       true,
+		ErrorSchema:     opts.Extraction.ErrorSchema,
 	})
 
 	return &Result{

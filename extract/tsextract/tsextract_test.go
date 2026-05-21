@@ -453,8 +453,9 @@ func TestNestJSSpecGeneration(t *testing.T) {
 		Title:           "User Service",
 		Version:         "1.0.0",
 		OpenAPIVersion:  "3.2",
-		ServiceTemplate: "saas-atlasjs",
+		ServiceTemplate: "typescript-node",
 		TreeShake:       true,
+		ErrorSchema:     "legacy-error-response",
 	})
 
 	if spec["openapi"] != "3.2.0" {
@@ -465,8 +466,8 @@ func TestNestJSSpecGeneration(t *testing.T) {
 	if info["title"] != "User Service" {
 		t.Errorf("expected title 'User Service', got %v", info["title"])
 	}
-	if info["x-service-template"] != "saas-atlasjs" {
-		t.Errorf("expected service template 'saas-atlasjs', got %v", info["x-service-template"])
+	if info["x-service-template"] != "typescript-node" {
+		t.Errorf("expected service template 'typescript-node', got %v", info["x-service-template"])
 	}
 
 	paths := spec["paths"].(map[string]interface{})
@@ -1439,7 +1440,7 @@ func TestTSErrorResponseSchemas(t *testing.T) {
 		Types:   make(map[string]*index.TypeDecl),
 	}
 
-	spec := GenerateSpec(result, SpecConfig{Title: "Test", Version: "1.0.0"})
+	spec := GenerateSpec(result, SpecConfig{Title: "Test", Version: "1.0.0", ErrorSchema: "legacy-error-response"})
 	paths := spec["paths"].(map[string]interface{})
 	testPath := paths["/test"].(map[string]interface{})
 	getOp := testPath["get"].(map[string]interface{})
@@ -1543,7 +1544,7 @@ func TestTS404ForResourceEndpoint(t *testing.T) {
 		Schemas: make(map[string]interface{}),
 	}
 
-	spec := GenerateSpec(result, SpecConfig{Title: "Test", Version: "1.0.0"})
+	spec := GenerateSpec(result, SpecConfig{Title: "Test", Version: "1.0.0", ErrorSchema: "legacy-error-response"})
 	paths := spec["paths"].(map[string]interface{})
 
 	// GET /{id} should have 404
@@ -1768,7 +1769,7 @@ export class ItemController {
 		t.Fatal(err)
 	}
 
-	spec := GenerateSpec(result, SpecConfig{Title: "Test", Version: "1.0.0"})
+	spec := GenerateSpec(result, SpecConfig{Title: "Test", Version: "1.0.0", ErrorSchema: "legacy-error-response"})
 	paths := spec["paths"].(map[string]interface{})
 	for _, pi := range paths {
 		for _, opObj := range pi.(map[string]interface{}) {

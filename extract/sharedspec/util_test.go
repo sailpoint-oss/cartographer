@@ -177,7 +177,7 @@ func TestBuildPaths_NormalizesPathKeys(t *testing.T) {
 		Types:   map[string]*index.TypeDecl{},
 	}
 
-	paths := buildPaths(result, testAdapter{})
+	paths := buildPaths(result, specmodel.SpecConfig{}, testAdapter{})
 	if _, ok := paths["/workgroups"]; !ok {
 		t.Fatalf("expected normalized /workgroups path key, got %#v", paths)
 	}

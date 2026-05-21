@@ -43,9 +43,10 @@ func (r *Result) ToUnifiedResult() *specmodel.Result {
 		ops[i] = convertJavaOperation(op)
 	}
 	return &specmodel.Result{
-		Operations: ops,
-		Schemas:    r.Schemas,
-		Types:      r.Types,
+		Operations:  ops,
+		Schemas:     r.Schemas,
+		Types:       r.Types,
+		Diagnostics: r.Diagnostics,
 	}
 }
 
@@ -98,6 +99,7 @@ func convertJavaOperation(op *Operation) *specmodel.Operation {
 		ProducesContentType:    op.ProducesContentType,
 		ReturnDescription:      op.ReturnDescription,
 		ErrorResponses:         op.ErrorResponses,
+		ErrorResponseSchemas: convertErrorSchemas(op.ErrorResponseSchemas),
 		AnnotatedResponses:     annotated,
 		ResponseHeaders:        op.ResponseHeaders,
 		NullableResponse:       op.NullableResponse,
@@ -154,4 +156,19 @@ func convertJavaParam(p *Parameter, defaultFile string) *specmodel.Parameter {
 		sp.MaxItems = &v
 	}
 	return sp
+}
+
+func convertErrorSchemas(entries []ErrorResponseSchemaEntry) []specmodel.ErrorResponseSchema {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]specmodel.ErrorResponseSchema, len(entries))
+	for i, e := range entries {
+		out[i] = specmodel.ErrorResponseSchema{
+			StatusCode:  e.StatusCode,
+			SchemaType:  e.SchemaType,
+			Description: e.Description,
+		}
+	}
+	return out
 }

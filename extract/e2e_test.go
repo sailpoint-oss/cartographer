@@ -17,10 +17,10 @@ func testdataDir() string {
 }
 
 // =============================================================================
-// Phase 4.3: Chronicle regression test — ResponseEntity<List<ServiceAPI>>
+// Phase 4.3: Inventory regression test — ResponseEntity<List<ServiceAPI>>
 // =============================================================================
 
-func TestChronicleGenerics(t *testing.T) {
+func TestInventoryGenerics(t *testing.T) {
 	dir := filepath.Join(testdataDir(), "java-generics", "com", "example")
 
 	result, err := javaextract.Extract(javaextract.Config{
@@ -54,7 +54,7 @@ func TestChronicleGenerics(t *testing.T) {
 
 	// Generate spec and check the response schema
 	spec := javaextract.GenerateSpec(result, javaextract.SpecConfig{
-		Title:   "Chronicle",
+		Title:   "Inventory",
 		Version: "1.0",
 	})
 
@@ -63,19 +63,19 @@ func TestChronicleGenerics(t *testing.T) {
 		t.Fatal("no paths in spec")
 	}
 
-	chroniclePath, ok := paths["/api/v1/chronicle/services"].(map[string]any)
+	inventoryPath, ok := paths["/api/v1/inventory/services"].(map[string]any)
 	if !ok {
-		t.Fatal("missing /api/v1/chronicle/services path")
+		t.Fatal("missing /api/v1/inventory/services path")
 	}
 
-	getOp, ok := chroniclePath["get"].(map[string]any)
+	getOp, ok := inventoryPath["get"].(map[string]any)
 	if !ok {
-		t.Fatal("missing GET operation on /api/v1/chronicle/services")
+		t.Fatal("missing GET operation on /api/v1/inventory/services")
 	}
 
 	// Verify x-source-line is present
 	if getOp["x-source-line"] == nil {
-		t.Error("expected x-source-line on GET /api/v1/chronicle/services")
+		t.Error("expected x-source-line on GET /api/v1/inventory/services")
 	}
 
 	responses, ok := getOp["responses"].(map[string]any)
@@ -318,7 +318,7 @@ func TestTSGenerics(t *testing.T) {
 // Generics package edge cases
 // =============================================================================
 
-func TestGenericsChronicleBug(t *testing.T) {
+func TestGenericsInventoryBug(t *testing.T) {
 	// The original bug: ResponseEntity<List<ServiceAPI>> resolved to bare {type: "object"}
 	schema := generics.Parse("ResponseEntity<List<ServiceAPI>>").ToOpenAPISchema(nil)
 	if schema["type"] != "array" {
@@ -595,7 +595,7 @@ func goldenDir() string {
 	return filepath.Join(testdataDir(), "golden")
 }
 
-func TestGoldenChronicleGenerics(t *testing.T) {
+func TestGoldenInventoryGenerics(t *testing.T) {
 	dir := filepath.Join(testdataDir(), "java-generics", "com", "example")
 	result, err := javaextract.Extract(javaextract.Config{
 		RootDir:    dir,
@@ -605,10 +605,10 @@ func TestGoldenChronicleGenerics(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := javaextract.GenerateSpec(result, javaextract.SpecConfig{
-		Title:   "Chronicle",
+		Title:   "Inventory",
 		Version: "1.0",
 	})
-	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "chronicle-generics.yaml"), spec,
+	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "inventory-generics.yaml"), spec,
 		testutil.WithNormalize(testutil.StripSourceLocations))
 }
 
@@ -662,6 +662,23 @@ func TestGoldenTSGenerics(t *testing.T) {
 		Version: "1.0",
 	})
 	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "ts-generics.yaml"), spec,
+		testutil.WithNormalize(testutil.StripSourceLocations))
+}
+
+func TestGoldenJavaUpstreamAccuracy(t *testing.T) {
+	dir := filepath.Join(testdataDir(), "java-upstream", "com", "example")
+	result, err := javaextract.Extract(javaextract.Config{
+		RootDir:    dir,
+		SourceDirs: []string{dir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := javaextract.GenerateSpec(result, javaextract.SpecConfig{
+		Title:   "Upstream Fixture API",
+		Version: "1.0",
+	})
+	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "java-upstream.yaml"), spec,
 		testutil.WithNormalize(testutil.StripSourceLocations))
 }
 

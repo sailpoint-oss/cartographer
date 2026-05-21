@@ -615,7 +615,7 @@ func parseRouteDecorator(decorator *tree_sitter.Node, source []byte) (routeDecor
 
 	if rd.Framework == "" {
 		// default to fastapi for verb decorators — FastAPI is the most common
-		// modern Python web framework at SailPoint
+		// modern Python web framework (FastAPI, Flask, etc.)
 		rd.Framework = "fastapi"
 	}
 

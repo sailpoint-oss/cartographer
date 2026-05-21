@@ -430,7 +430,7 @@ func TestErrorResponseInfo(t *testing.T) {
 	info := ErrorResponseInfo{
 		StatusCode:      400,
 		ResponseType:    "web.Error",
-		ResponsePackage: "github.com/sailpoint/atlas-go/v2/atlas/web",
+		ResponsePackage: FrameworkWebPackagePath,
 		ErrorMessage:    "Invalid request",
 		Source:          "web.BadRequest",
 	}

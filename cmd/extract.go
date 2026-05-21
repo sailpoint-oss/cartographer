@@ -53,7 +53,7 @@ func init() {
 	extractCmd.Flags().StringVar(&extractTitle, "title", "", "API title override")
 	extractCmd.Flags().StringVar(&extractVersion, "version", "", "API version override")
 	extractCmd.Flags().StringVar(&extractDesc, "description", "", "API description override")
-	extractCmd.Flags().StringVar(&extractTmpl, "template", "", "Service template override (atlas-go, atlas-boot, saas-atlasjs)")
+	extractCmd.Flags().StringVar(&extractTmpl, "template", "", "Service template override (go-web, java-spring, typescript-node, python-fastapi)")
 }
 
 func runExtract(cmd *cobra.Command, args []string) error {

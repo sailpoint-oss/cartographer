@@ -333,7 +333,7 @@ func (e *Extractor) analyzePackage(pkg *packages.Package) error {
 	e.metadata.Package = pkg.PkgPath
 
 	// Special handling for web package - analyze error constructors
-	if strings.HasSuffix(pkg.PkgPath, "/atlas/web") {
+	if isFrameworkWebPackage(pkg.PkgPath) {
 		e.errorSchemaAnalyzer.AnalyzeWebPackage(pkg.Syntax, pkg.TypesInfo)
 	}
 
@@ -402,8 +402,10 @@ func (e *Extractor) analyzeFile(file *ast.File, filename string, pkg *packages.P
 	// Now that all handlers are cached and subrouter context is known
 	ast.Inspect(file, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
-			// Look for router.Handle() and router.HandleFunc() calls
 			e.analyzeRouterCall(call, file, filename, pkg)
+			if routeInfo := e.routerAnalyzer.AnalyzeMuxPathMethodHandler(call, file, pkg.TypesInfo, e.fset); routeInfo != nil {
+				e.registerRoute(routeInfo, filename, call.Pos())
+			}
 		}
 		return true
 	})
@@ -444,39 +446,40 @@ func (e *Extractor) analyzeFuncDecl(funcDecl *ast.FuncDecl, file *ast.File, file
 // analyzeRouterCall analyzes calls to router registration functions.
 func (e *Extractor) analyzeRouterCall(call *ast.CallExpr, file *ast.File, filename string, pkg *packages.Package) {
 	routeInfo := e.routerAnalyzer.AnalyzeRouterCall(call, file, pkg.TypesInfo, e.fset)
-	if routeInfo != nil {
+	if routeInfo == nil {
+		return
+	}
+	e.registerRoute(routeInfo, filename, call.Pos())
+}
+
+func (e *Extractor) registerRoute(routeInfo *RouteInfo, filename string, pos token.Pos) {
+	if e.config.Verbose {
+		fmt.Printf("  Found route: %s %s -> handler: %s, rights: %v\n",
+			routeInfo.Method, routeInfo.Path, routeInfo.HandlerName, routeInfo.Rights)
+	}
+
+	op := &OperationInfo{
+		ID:           routeInfo.HandlerName,
+		Path:         routeInfo.Path,
+		Method:       routeInfo.Method,
+		Rights:       routeInfo.Rights,
+		RequiresAuth: len(routeInfo.Rights) > 0,
+		HandlerFunc:  routeInfo.HandlerName,
+		File:         filename,
+		Line:         e.fset.Position(pos).Line,
+	}
+
+	if handlerInfo := e.getHandlerInfo(routeInfo.HandlerName); handlerInfo != nil {
+		e.mergeHandlerInfo(op, handlerInfo)
 		if e.config.Verbose {
-			fmt.Printf("  Found route: %s %s -> handler: %s, rights: %v\n",
-				routeInfo.Method, routeInfo.Path, routeInfo.HandlerName, routeInfo.Rights)
+			fmt.Printf("  Merged handler info for: %s\n", routeInfo.HandlerName)
 		}
+	} else if e.config.Verbose {
+		fmt.Printf("  No cached handler info for: %s\n", routeInfo.HandlerName)
+	}
 
-		// Create operation from route info
-		op := &OperationInfo{
-			ID:           routeInfo.HandlerName,
-			Path:         routeInfo.Path,
-			Method:       routeInfo.Method,
-			Rights:       routeInfo.Rights,
-			RequiresAuth: len(routeInfo.Rights) > 0,
-			HandlerFunc:  routeInfo.HandlerName,
-			File:         filename,
-			Line:         e.fset.Position(call.Pos()).Line,
-		}
-
-		// Try to merge with handler analysis if available
-		if handlerInfo := e.getHandlerInfo(routeInfo.HandlerName); handlerInfo != nil {
-			e.mergeHandlerInfo(op, handlerInfo)
-			if e.config.Verbose {
-				fmt.Printf("  Merged handler info for: %s\n", routeInfo.HandlerName)
-			}
-		} else if e.config.Verbose {
-			fmt.Printf("  No cached handler info for: %s\n", routeInfo.HandlerName)
-		}
-
-		// Add to metadata
-		if err := e.metadata.AddOperation(op); err != nil {
-			// Log but don't fail - duplicate operations might be expected
-			fmt.Printf("Warning: %v\n", err)
-		}
+	if err := e.metadata.AddOperation(op); err != nil {
+		fmt.Printf("Warning: %v\n", err)
 	}
 }
 

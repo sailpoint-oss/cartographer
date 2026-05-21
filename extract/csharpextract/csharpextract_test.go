@@ -136,7 +136,7 @@ public class WidgetDto { public string Id { get; set; } }
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
-	spec := GenerateSpec(result, SpecConfig{Title: "Example API", Version: "1.0.0", OpenAPIVersion: "3.2", ServiceTemplate: "atlas-csharp"})
+	spec := GenerateSpec(result, SpecConfig{Title: "Example API", Version: "1.0.0", OpenAPIVersion: "3.2", ServiceTemplate: "csharp-web"})
 	paths := spec["paths"].(map[string]any)
 	op := paths["/widgets/{id}"].(map[string]any)["get"].(map[string]any)
 	if _, ok := op["x-source-file"]; !ok {
@@ -146,5 +146,57 @@ public class WidgetDto { public string Id { get; set; } }
 	schemas := components["schemas"].(map[string]any)
 	if _, ok := schemas["WidgetDto"]; !ok {
 		t.Fatalf("expected WidgetDto component schema")
+	}
+}
+
+func TestCSharpDataAnnotationsOnRequestBody(t *testing.T) {
+	dir := t.TempDir()
+	writeCS(t, dir, "CreateWidgetRequest.cs", `namespace Demo;
+
+public class CreateWidgetRequest {
+  [Required]
+  [StringLength(128)]
+  public string Name { get; set; }
+}
+`)
+	writeCS(t, dir, "WidgetsController.cs", `namespace Demo;
+
+[ApiController]
+[Route("widgets")]
+public class WidgetsController {
+  [HttpPost("")]
+  public WidgetDto Create([FromBody] CreateWidgetRequest request) { return null; }
+}
+
+public class WidgetDto {
+  public string Id { get; set; }
+}
+`)
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	spec := GenerateSpec(result, SpecConfig{Title: "Example API", Version: "1.0.0"})
+	paths := spec["paths"].(map[string]any)
+	post := paths["/widgets"].(map[string]any)["post"].(map[string]any)
+	reqBody := post["requestBody"].(map[string]any)
+	content := reqBody["content"].(map[string]any)
+	jsonContent := content["application/json"].(map[string]any)
+	schema := jsonContent["schema"].(map[string]any)
+	props := schema["properties"].(map[string]any)
+	name := props["name"].(map[string]any)
+	if got, ok := name["maxLength"].(float64); !ok || int(got) != 128 {
+		if gotInt, ok := name["maxLength"].(int); !ok || gotInt != 128 {
+			t.Errorf("maxLength = %v, want 128", name["maxLength"])
+		}
+	}
+	if ref, ok := schema["$ref"].(string); ok && ref != "" {
+		components := spec["components"].(map[string]any)
+		schemas := components["schemas"].(map[string]any)
+		schema = schemas["CreateWidgetRequest"].(map[string]any)
+	}
+	required, _ := schema["required"].([]any)
+	if len(required) != 1 || required[0] != "name" {
+		t.Errorf("required = %v, want [name]", required)
 	}
 }

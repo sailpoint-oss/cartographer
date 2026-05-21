@@ -550,7 +550,7 @@ func (ra *RouterAnalyzer) unwrapHandler(expr ast.Expr, info *types.Info) (string
 			}
 
 		// Pattern 2: Service wrapper - handles multiple argument orders:
-		// Pattern A: s.requireRight("right", handler) - right first, handler second (common in atlas-go services)
+		// Pattern A: s.requireRight("right", handler) - right first, handler second.
 		// Pattern B: s.requireRight(handler, "right1", "right2") - handler first, rights after
 		// Pattern C: requireRight(summarizer, "right", handler) - summarizer, right, handler (three args)
 		if (strings.HasPrefix(strings.ToLower(methodName), "require") &&

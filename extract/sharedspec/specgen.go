@@ -57,8 +57,8 @@ func GenerateSpec(result *specmodel.Result, cfg specmodel.SpecConfig, adapter La
 			"title":   cfg.Title,
 			"version": cfg.Version,
 		},
-		"paths":      buildPaths(result, adapter),
-		"components": buildComponents(result, adapter),
+		"paths":      buildPaths(result, cfg, adapter),
+		"components": buildComponents(result, cfg, adapter),
 	}
 
 	if cfg.Description != "" {
@@ -67,6 +67,10 @@ func GenerateSpec(result *specmodel.Result, cfg specmodel.SpecConfig, adapter La
 
 	if cfg.ServiceTemplate != "" {
 		spec["info"].(map[string]any)["x-service-template"] = cfg.ServiceTemplate
+	}
+
+	if len(result.Diagnostics) > 0 {
+		spec["info"].(map[string]any)["x-cartographer-diagnostics"] = result.Diagnostics
 	}
 
 	if tags := buildTopLevelTags(result); len(tags) > 0 {
@@ -101,7 +105,7 @@ func buildTopLevelTags(result *specmodel.Result) []any {
 }
 
 // buildPaths builds the OpenAPI paths object from extracted operations.
-func buildPaths(result *specmodel.Result, adapter LanguageAdapter) map[string]any {
+func buildPaths(result *specmodel.Result, cfg specmodel.SpecConfig, adapter LanguageAdapter) map[string]any {
 	paths := make(map[string]any)
 	operationIDs := make(map[string]int)
 
@@ -129,7 +133,7 @@ func buildPaths(result *specmodel.Result, adapter LanguageAdapter) map[string]an
 			paths[normalizedPath] = pathItem
 		}
 
-		operation := buildOperation(op, result, adapter)
+		operation := buildOperation(op, result, cfg, adapter)
 		pathItem[strings.ToLower(op.Method)] = operation
 	}
 
@@ -137,7 +141,7 @@ func buildPaths(result *specmodel.Result, adapter LanguageAdapter) map[string]an
 }
 
 // buildOperation builds an OpenAPI operation object.
-func buildOperation(op *specmodel.Operation, result *specmodel.Result, adapter LanguageAdapter) map[string]any {
+func buildOperation(op *specmodel.Operation, result *specmodel.Result, cfg specmodel.SpecConfig, adapter LanguageAdapter) map[string]any {
 	operation := map[string]any{
 		"operationId": op.OperationID,
 	}
@@ -247,6 +251,9 @@ func buildOperation(op *specmodel.Operation, result *specmodel.Result, adapter L
 		if schema == nil {
 			schema = generics.Parse(op.RequestBodyType).ToOpenAPISchema(nil)
 		}
+		if result != nil && result.Types != nil {
+			schema = enrichBodySchema(adapter, op.RequestBodyType, schema, result.Types)
+		}
 		contentType := "application/json"
 		if op.ConsumesContentType != "" {
 			contentType = op.ConsumesContentType
@@ -311,7 +318,7 @@ func buildOperation(op *specmodel.Operation, result *specmodel.Result, adapter L
 	}
 
 	// Responses
-	operation["responses"] = buildResponses(op, result)
+	operation["responses"] = buildResponses(op, result, cfg, adapter)
 
 	// Source location
 	loc := sourceloc.Location{File: op.File, Line: op.Line, Column: op.Column}
@@ -376,7 +383,7 @@ func buildParameter(p *specmodel.Parameter, schema map[string]any) map[string]an
 }
 
 // buildResponses constructs the responses object for an operation.
-func buildResponses(op *specmodel.Operation, result *specmodel.Result) map[string]any {
+func buildResponses(op *specmodel.Operation, result *specmodel.Result, cfg specmodel.SpecConfig, adapter LanguageAdapter) map[string]any {
 	responses := make(map[string]any)
 
 	// Success response
@@ -467,7 +474,7 @@ func buildResponses(op *specmodel.Operation, result *specmodel.Result) map[strin
 		responses[code] = resp
 	}
 
-	// Priority 2: Error responses from exception analysis
+	// Priority 2: Error responses from exception analysis (description only unless typed below)
 	for code, desc := range op.ErrorResponses {
 		codeStr := fmt.Sprintf("%d", code)
 		if _, exists := responses[codeStr]; !exists {
@@ -477,41 +484,69 @@ func buildResponses(op *specmodel.Operation, result *specmodel.Result) map[strin
 		}
 	}
 
-	// Priority 3: Standard defaults
-	defaultErrors := map[string]string{
-		"400": "Bad Request - Invalid input parameters",
-		"401": "Unauthorized - Authentication required",
-		"403": "Forbidden - Insufficient permissions",
-		"500": "Internal Server Error",
-	}
-
-	// 404 for single-resource endpoints with path params
-	hasPathParam := false
-	for _, p := range op.Parameters {
-		if p.In == "path" {
-			hasPathParam = true
-			break
+	// Priority 2b: Typed error bodies from @ControllerAdvice / handler return types
+	for _, ers := range op.ErrorResponseSchemas {
+		codeStr := fmt.Sprintf("%d", ers.StatusCode)
+		resp := map[string]any{
+			"description": ers.Description,
 		}
-	}
-	method := strings.ToUpper(op.Method)
-	if hasPathParam && (method == "GET" || method == "PUT" || method == "PATCH" || method == "DELETE") {
-		defaultErrors["404"] = "Not Found - Resource does not exist"
-	}
-
-	// 409 Conflict for POST/PUT
-	if method == "POST" || method == "PUT" {
-		defaultErrors["409"] = "Conflict - Resource already exists or state conflict"
-	}
-
-	for code, desc := range defaultErrors {
-		if _, exists := responses[code]; !exists {
-			responses[code] = map[string]any{
-				"description": desc,
-				"content": map[string]any{
-					"application/json": map[string]any{
-						"schema": ErrorResponseRef(),
-					},
+		if ers.SchemaType != "" {
+			var errSchema map[string]any
+			if result != nil && result.Schemas != nil {
+				if indexed, ok := result.Schemas[ers.SchemaType]; ok {
+					if m, ok2 := indexed.(map[string]any); ok2 {
+						errSchema = m
+					}
+				}
+			}
+			if errSchema == nil {
+				errSchema = generics.Parse(ers.SchemaType).ToOpenAPISchema(nil)
+			}
+			contentType := "application/json"
+			if cfg.ErrorSchema == "problem-details" || strings.Contains(strings.ToLower(ers.SchemaType), "problemdetail") {
+				contentType = "application/problem+json"
+			}
+			resp["content"] = map[string]any{
+				contentType: map[string]any{
+					"schema": errSchema,
 				},
+			}
+		}
+		responses[codeStr] = resp
+	}
+
+	// Legacy opt-in default errors (only when explicitly configured).
+	if cfg.ErrorSchema == "legacy-error-response" {
+		defaultErrors := map[string]string{
+			"400": "Bad Request - Invalid input parameters",
+			"401": "Unauthorized - Authentication required",
+			"403": "Forbidden - Insufficient permissions",
+			"500": "Internal Server Error",
+		}
+		hasPathParam := false
+		for _, p := range op.Parameters {
+			if p.In == "path" {
+				hasPathParam = true
+				break
+			}
+		}
+		method := strings.ToUpper(op.Method)
+		if hasPathParam && (method == "GET" || method == "PUT" || method == "PATCH" || method == "DELETE") {
+			defaultErrors["404"] = "Not Found - Resource does not exist"
+		}
+		if method == "POST" || method == "PUT" {
+			defaultErrors["409"] = "Conflict - Resource already exists or state conflict"
+		}
+		for code, desc := range defaultErrors {
+			if _, exists := responses[code]; !exists {
+				responses[code] = map[string]any{
+					"description": desc,
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": ErrorResponseRef(),
+						},
+					},
+				}
 			}
 		}
 	}
@@ -551,7 +586,7 @@ func buildResponses(op *specmodel.Operation, result *specmodel.Result) map[strin
 // buildComponents builds the OpenAPI components object.
 // BUG FIX: Prefers pre-computed schemas (from index resolver, WITH annotations)
 // over rebuilding from TypeDecl (which loses field constraints).
-func buildComponents(result *specmodel.Result, adapter LanguageAdapter) map[string]any {
+func buildComponents(result *specmodel.Result, cfg specmodel.SpecConfig, adapter LanguageAdapter) map[string]any {
 	schemas := make(map[string]any)
 
 	referenced := collectReferencedTypes(result, adapter)
@@ -614,8 +649,12 @@ func buildComponents(result *specmodel.Result, adapter LanguageAdapter) map[stri
 		}
 	}
 
-	// Add shared ErrorResponse schema
-	schemas["ErrorResponse"] = ErrorResponseSchema()
+	if cfg.ErrorSchema == "legacy-error-response" {
+		schemas["ErrorResponse"] = ErrorResponseSchema()
+	}
+	if cfg.ErrorSchema == "problem-details" {
+		schemas["ProblemDetails"] = ProblemDetailsSchema()
+	}
 
 	components := map[string]any{
 		"schemas": schemas,

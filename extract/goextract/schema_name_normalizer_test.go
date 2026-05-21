@@ -33,7 +33,7 @@ func TestSchemaNameNormalizer_NormalizeSchemaName(t *testing.T) {
 		// Array types
 		{
 			name:     "array type with package",
-			input:    "[]github.com/sailpoint/pkg.User",
+			input:    "[]example.com/acme/pkg.User",
 			expected: "UserArray",
 		},
 		{
@@ -50,7 +50,7 @@ func TestSchemaNameNormalizer_NormalizeSchemaName(t *testing.T) {
 		// Pointer types
 		{
 			name:     "pointer type with package",
-			input:    "*github.com/sailpoint/pkg.User",
+			input:    "*example.com/acme/pkg.User",
 			expected: "User",
 		},
 		{
@@ -137,12 +137,12 @@ func TestSchemaNameNormalizer_NormalizeSchemaName(t *testing.T) {
 		// Complex types from real-world usage
 		{
 			name:     "real world array type",
-			input:    "[]github.com/sailpoint/sp-api-usage/internal/model/database.TotalCount",
+			input:    "[]example.com/acme-api/internal/models.TotalCount",
 			expected: "TotalCountArray",
 		},
 		{
 			name:     "real world pointer type",
-			input:    "*github.com/sailpoint/sp-api-usage/internal/model/database.ApiCallBreakdown",
+			input:    "*example.com/acme-api/internal/models.ApiCallBreakdown",
 			expected: "ApiCallBreakdown",
 		},
 	}
