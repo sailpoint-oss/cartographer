@@ -266,7 +266,11 @@ func parseProperties(text string) []property {
 			continue
 		}
 		attrs := text[loc[0]:loc[2]]
-		p := property{Name: lowerFirst(name), Type: cleanType(typ)}
+		wireName := extractCSharpJsonWireName(attrs)
+		if wireName == "" {
+			wireName = lowerFirst(name)
+		}
+		p := property{Name: wireName, Type: cleanType(typ)}
 		if strings.Contains(attrs, "[Required") {
 			p.Required = true
 		}
@@ -562,6 +566,19 @@ func title(s string) string {
 		return "Default"
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+func extractCSharpJsonWireName(attrs string) string {
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`\[JsonPropertyName\(\s*"([^"]+)"`),
+		regexp.MustCompile(`\[JsonProperty\(\s*"([^"]+)"`),
+		regexp.MustCompile(`\[JsonProperty\(\s*PropertyName\s*=\s*"([^"]+)"`),
+	} {
+		if m := re.FindStringSubmatch(attrs); len(m) > 1 {
+			return m[1]
+		}
+	}
+	return ""
 }
 
 func lowerFirst(s string) string {

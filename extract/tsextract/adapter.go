@@ -1,6 +1,7 @@
 package tsextract
 
 import (
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/specmodel"
 )
 
@@ -24,12 +25,18 @@ func convertTSOperation(op *Operation) *specmodel.Operation {
 	}
 
 	var security []specmodel.SecurityRequirement
+	var rights []string
 	if op.RequiresAuth && len(op.Security) > 0 {
-		// TS convention: first element is scheme name, rest are scopes
 		scheme := op.Security[0]
-		scopes := op.Security[1:]
+		tokens := op.Security[1:]
+		if len(tokens) == 0 && scheme != "oauth2" && scheme != "bearerAuth" && scheme != "bearer" {
+			tokens = []string{scheme}
+			scheme = "oauth2"
+		}
+		var oauthScopes []string
+		rights, oauthScopes = authscope.PartitionTokens(tokens, nil)
 		security = []specmodel.SecurityRequirement{
-			{Scheme: scheme, Scopes: scopes},
+			{Scheme: scheme, Scopes: oauthScopes},
 		}
 	}
 
@@ -58,6 +65,7 @@ func convertTSOperation(op *Operation) *specmodel.Operation {
 		Deprecated:             op.Deprecated,
 		DeprecatedSince:        op.DeprecatedSince,
 		Security:               security,
+		Rights:                 rights,
 		ConsumesContentType:    op.ConsumesContentType,
 		ProducesContentType:    op.ProducesContentType,
 		ErrorResponses:         op.ErrorResponses,

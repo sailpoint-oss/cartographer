@@ -68,7 +68,9 @@ type Operation struct {
 	Deprecated             bool
 	DeprecatedSince        string
 	Hidden                 bool
-	Security               []string // rights/scopes
+	Security               []string // legacy combined; prefer Rights and OAuthScopes
+	Rights                 []string // @RequireRight, @PreAuthorize, @Secured, etc.
+	OAuthScopes            []string // @SecurityRequirement scopes only
 	ConsumesContentType    string   // from @Consumes or consumes= attribute
 	ProducesContentType    string   // from @Produces or produces= attribute
 	ReturnDescription      string
@@ -1364,8 +1366,9 @@ func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePat
 	rateLimited := false
 	nullableResponse := false
 	requestBodyDescription := ""
-	var security []string
-	security = append(security, classSecurity...)
+	var rights []string
+	var oauthScopes []string
+	rights = append(rights, classSecurity...)
 	var annotatedResponses []AnnotatedResponse
 
 	// Extract method-level annotations and metadata
@@ -1427,28 +1430,23 @@ func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePat
 					// Method-level @Parameter is handled in classifyParameterAnnotation
 				}
 
-				// @SecurityRequirement
+				// @SecurityRequirement — OpenAPI PAT scopes
 				if annName == "SecurityRequirement" {
-					sec := parseSecurityRequirement(annArgs)
-					security = append(security, sec...)
+					oauthScopes = append(oauthScopes, parseSecurityRequirement(annArgs)...)
 				}
 
-				// @PreAuthorize / @Secured / @RequireRight / @RolesAllowed
+				// @PreAuthorize / @Secured / @RequireRight / @RolesAllowed — AMS rights
 				if annName == "PreAuthorize" {
-					sec := parsePreAuthorize(annArgs, ctx.constants)
-					security = append(security, sec...)
+					rights = append(rights, parsePreAuthorize(annArgs, ctx.constants)...)
 				}
 				if annName == "Secured" {
-					sec := parseSecuredAnnotation(annArgs)
-					security = append(security, sec...)
+					rights = append(rights, parseSecuredAnnotation(annArgs)...)
 				}
 				if annName == "RequireRight" {
-					sec := parseRequireRight(annArgs, ctx.constants)
-					security = append(security, sec...)
+					rights = append(rights, parseRequireRight(annArgs, ctx.constants)...)
 				}
 				if annName == "RolesAllowed" {
-					sec := parseSecuredAnnotation(annArgs)
-					security = append(security, sec...)
+					rights = append(rights, parseSecuredAnnotation(annArgs)...)
 				}
 
 				// Improvement #14: @Metered / @Timed / @RateLimited → x-rate-limited
@@ -1653,7 +1651,8 @@ func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePat
 		ResponseStatus:         responseStatus,
 		Deprecated:             deprecated,
 		DeprecatedSince:        deprecatedSince,
-		Security:               security,
+		Rights:                 filterValidScopes(rights),
+		OAuthScopes:            filterValidScopes(oauthScopes),
 		ConsumesContentType:    consumesContentType,
 		ProducesContentType:    producesContentType,
 		ReturnDescription:      jdoc.Return,
@@ -1794,7 +1793,7 @@ var reHasAnyAuthority = regexp.MustCompile(`hasAnyAuthority\(\s*(.+?)\s*\)`)
 var reHasAnyRole = regexp.MustCompile(`hasAnyRole\(\s*(.+?)\s*\)`)
 var reTClassConstant = regexp.MustCompile(`T\(\w+\)\.(\w+)`)
 
-// parsePreAuthorize parses @PreAuthorize("hasAuthority('sp:api:read')") etc.
+// parsePreAuthorize parses @PreAuthorize("hasAuthority('api:resource:read')") etc.
 func parsePreAuthorize(args string, constants map[string]string) []string {
 	args = strings.TrimPrefix(args, "(")
 	args = strings.TrimSuffix(args, ")")
@@ -1857,7 +1856,7 @@ func parseSecuredAnnotation(args string) []string {
 	return roles
 }
 
-// parseRequireRight parses @RequireRight("sp:scope:read") or @RequireRight({"a", "b"}) or @RequireRight(Right.READ).
+// parseRequireRight parses @RequireRight("api:scope:read") or @RequireRight({"a", "b"}) or @RequireRight(Right.READ).
 func parseRequireRight(args string, constants map[string]string) []string {
 	args = strings.TrimPrefix(args, "(")
 	args = strings.TrimSuffix(args, ")")

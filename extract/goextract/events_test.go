@@ -12,8 +12,8 @@ func TestCamelToKebab(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"GovernanceGroup", "governance-group"},
-		{"IdentityCreated", "identity-created"},
+		{"ResourceGroup", "resource-group"},
+		{"OrderCreated", "order-created"},
 		{"ABC", "a-b-c"},
 		{"simple", "simple"},
 		{"CamelCase", "camel-case"},
@@ -34,8 +34,8 @@ func TestKebabToCamel(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"governance-group", "governanceGroup"},
-		{"identity-created", "identityCreated"},
+		{"resource-group", "resourceGroup"},
+		{"order-created", "orderCreated"},
 		{"simple", "simple"},
 		{"multi-word-name", "multiWordName"},
 		{"", ""},
@@ -54,8 +54,8 @@ func TestSnakeToCamel(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"GOVERNANCE_GROUP", "governanceGroup"},
-		{"IDENTITY_CREATED", "identityCreated"},
+		{"RESOURCE_GROUP", "resourceGroup"},
+		{"ORDER_CREATED", "orderCreated"},
 		{"SIMPLE", "simple"},
 		{"MULTI_WORD_NAME", "multiWordName"},
 		{"", ""},
@@ -74,8 +74,8 @@ func TestFormatTopicName(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"governance-group", "Governance Group"},
-		{"identity-created", "Identity Created"},
+		{"resource-group", "Resource Group"},
+		{"order-created", "Order Created"},
 		{"simple", "Simple"},
 		{"multi-word-topic-name", "Multi Word Topic Name"},
 	}
@@ -93,8 +93,8 @@ func TestFormatEventType(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"GOVERNANCE_GROUP", "Governance Group"},
-		{"IDENTITY_CREATED", "Identity Created"},
+		{"RESOURCE_GROUP", "Resource Group"},
+		{"ORDER_CREATED", "Order Created"},
 		{"SIMPLE", "Simple"},
 		{"MULTI_WORD_EVENT", "Multi Word Event"},
 	}
@@ -114,12 +114,11 @@ func TestEventAnalyzer_ConvertTopicIdentifier(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"TopicGovernanceGroup", "governance-group"},
-		{"TOPIC_IDENTITY_CREATED", "identity-created"},
-		{"IdnWorkgroup", "workgroup"},
-		// After removing IDN_, "ACCOUNT" has no underscores, so camelToKebab is used
-		// All uppercase letters are treated as word boundaries
-		{"IDN_ACCOUNT_V1", "account-v1"},
+		{"TopicResourceGroup", "resource-group"},
+		{"TOPIC_ORDER_CREATED", "order-created"},
+		{"PkgWorkgroup", "workgroup"},
+		// After removing PKG_, "ACCOUNT" has no underscores, so camelToKebab is used
+		{"PKG_ACCOUNT_V1", "account-v1"},
 		{"SimpleTopic", "simple-topic"},
 	}
 
@@ -140,8 +139,8 @@ func TestEventAnalyzer_GenerateWebhookName(t *testing.T) {
 		prefix    string
 		expected  string
 	}{
-		{"governance-group", "CREATED", "", "governanceGroupCreated"},
-		{"identity", "CHANGED", "on", "onIdentityChanged"},
+		{"resource-group", "CREATED", "", "resourceGroupCreated"},
+		{"orders", "CHANGED", "on", "onOrdersChanged"},
 		{"", "ACCOUNT_UPDATED", "", "accountUpdated"},
 		{"workgroup", "", "", "workgroup"},
 		{"", "", "publish", "publish"},
@@ -165,14 +164,14 @@ func TestEventAnalyzer_GenerateWebhookSummary(t *testing.T) {
 		expected string
 	}{
 		{
-			webhook:  &WebhookInfo{Topic: "governance-group", EventType: "CREATED"},
+			webhook:  &WebhookInfo{Topic: "resource-group", EventType: "CREATED"},
 			dir:      "publish",
-			expected: "Governance Group Created Event",
+			expected: "Resource Group Created Event",
 		},
 		{
-			webhook:  &WebhookInfo{Topic: "identity", EventType: "CHANGED"},
+			webhook:  &WebhookInfo{Topic: "orders", EventType: "CHANGED"},
 			dir:      "consume",
-			expected: "Identity Changed Handler",
+			expected: "Orders Changed Handler",
 		},
 		{
 			webhook:  &WebhookInfo{Topic: "", EventType: ""},
@@ -199,28 +198,28 @@ func TestParseWebhookAnnotations(t *testing.T) {
 		{
 			name: "full annotation",
 			comments: `
-// @openapi:webhook governanceGroupCreated
-// @openapi:webhook:topic governance-group-v1
+// @openapi:webhook resourceGroupCreated
+// @openapi:webhook:topic resource-group-v1
 // @openapi:webhook:eventType CREATED
-// @openapi:webhook:description Fired when a governance group is created
-// @openapi:webhook:payload WorkgroupEntityEventDTO
+// @openapi:webhook:description Fired when a resource group is created
+// @openapi:webhook:payload EntityEventDTO
 `,
 			expected: &WebhookInfo{
-				Name:        "governanceGroupCreated",
-				Topic:       "governance-group-v1",
+				Name:        "resourceGroupCreated",
+				Topic:       "resource-group-v1",
 				EventType:   "CREATED",
-				Description: "Fired when a governance group is created",
-				PayloadType: "WorkgroupEntityEventDTO",
+				Description: "Fired when a resource group is created",
+				PayloadType: "EntityEventDTO",
 				Direction:   "publish",
 			},
 		},
 		{
 			name: "minimal annotation",
 			comments: `
-// @openapi:webhook identityChanged
+// @openapi:webhook orderChanged
 `,
 			expected: &WebhookInfo{
-				Name:      "identityChanged",
+				Name:      "orderChanged",
 				Direction: "publish",
 			},
 		},

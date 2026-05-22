@@ -43,7 +43,7 @@ func TestCompletenessChecker_EvaluateFullyDocumentedOperation(t *testing.T) {
 		Tags:         []string{"Users"},
 		ResponseType: "[]User",
 		RequiresAuth: true,
-		Rights:       []string{"sp:users:read"},
+		Rights:       []string{"api:users:read"},
 	}
 
 	report := checker.Evaluate(metadata)
@@ -285,7 +285,7 @@ func TestCompletenessChecker_SecurityEvaluation(t *testing.T) {
 		Path:         "/secure",
 		Method:       "GET",
 		RequiresAuth: true,
-		Rights:       []string{"sp:read"},
+		Rights:       []string{"api:read"},
 	}
 
 	// Operation without auth (but explicitly unprotected)

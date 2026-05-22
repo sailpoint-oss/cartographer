@@ -119,9 +119,23 @@ service:
     errorSchema: legacy-error-response  # or problem-details when handlers reference RFC 7807 types
     signaturePaginationTypes: []        # expand indexed DTO fields when type appears in a method signature
     mergeCoLocatedOpenAPI: false        # merge in-repo OpenAPI path fragments for hybrid repos
+    authScopeTranslation: true          # emit x-sailpoint-required-rights + minimal security.oauth2 PAT scopes
+    amsMappingPath: ""                  # JSON from ams-mapping-gen; omit to use fictional test mapping in unit tests only
 ```
 
-Extracted specs may include `info.x-cartographer-diagnostics` with controller and operation counts for triage.
+## Rights and PAT scopes
+
+Cartographer separates **AMS rights** (what services enforce via `@RequireRight`, `web.RequireRights`, etc.) from **PAT scopes** (what customers select on tokens). When `authScopeTranslation` is enabled (default):
+
+- `x-sailpoint-required-rights` on each operation lists rights extracted from source.
+- `security.oauth2` lists the minimal PAT scope set that covers those rights (greedy set cover over the AMS mapping).
+- `x-sailpoint-auth-unmapped-rights` is set when a right has no scope in the loaded mapping.
+
+Generate a production mapping with `go run ./cmd/ams-mapping-gen` against a local `authorization-model-service` checkout and pass the JSON path via `amsMappingPath` or `extractionopts.AMSMappingPath`. **Do not commit production `idn:*` / fleet inventory into this public repository** — ship only fictional `extract/authscope/testdata/mapping.json` here; consumers (e.g. Meridian pipeline) version the real table separately. See [docs/ANONYMIZATION.md](docs/ANONYMIZATION.md).
+
+Extracted specs may include `info.x-cartographer-diagnostics` with controller, operation, and auth coverage counters for triage.
+
+**Public repo policy:** Testdata and tests must use fictional fixtures only — no real service inventory or material copied from private codebases. See [docs/ANONYMIZATION.md](docs/ANONYMIZATION.md).
 
 Supported languages: Go, Java (Spring/JAX-RS), TypeScript (NestJS), Python (FastAPI), and C# (minimal APIs / MVC).
 

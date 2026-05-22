@@ -1485,7 +1485,7 @@ func TestTSSecuritySchemesClientCredentials(t *testing.T) {
 				Method:       "GET",
 				OperationID:  "test",
 				RequiresAuth: true,
-				Security:     []string{"oauth2", "sp:read"},
+				Security:     []string{"oauth2", "api:read"},
 			},
 		},
 		Schemas: make(map[string]interface{}),

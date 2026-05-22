@@ -1,0 +1,17 @@
+---
+description: Cartographer public repo — keep all fixtures and tests fictional.
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# Anonymization
+
+Cartographer is public OSS. Testdata, golden files, and inline test strings must
+use fictional packages (`com.example`), hosts (`example.com`), and generic API
+names — never material copied from internal service repos or fleet inventory.
+
+When adding extraction behavior, document patterns in neutral language; do not
+commit internal fixtures as examples.
+
+Full policy: [docs/ANONYMIZATION.md](../../docs/ANONYMIZATION.md)

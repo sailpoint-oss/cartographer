@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/generics"
 	"github.com/sailpoint-oss/cartographer/extract/javaextract"
 	"github.com/sailpoint-oss/cartographer/extract/testutil"
@@ -674,9 +675,14 @@ func TestGoldenJavaUpstreamAccuracy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	authScope, err := authscope.ApplyOptionsFromPath(true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	spec := javaextract.GenerateSpec(result, javaextract.SpecConfig{
-		Title:   "Upstream Fixture API",
-		Version: "1.0",
+		Title:     "Upstream Fixture API",
+		Version:   "1.0",
+		AuthScope: authScope,
 	})
 	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "java-upstream.yaml"), spec,
 		testutil.WithNormalize(testutil.StripSourceLocations))

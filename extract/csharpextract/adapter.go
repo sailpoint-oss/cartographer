@@ -1,6 +1,9 @@
 package csharpextract
 
-import "github.com/sailpoint-oss/cartographer/extract/specmodel"
+import (
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
+	"github.com/sailpoint-oss/cartographer/extract/specmodel"
+)
 
 func (r *Result) ToUnifiedResult() *specmodel.Result {
 	ops := make([]*specmodel.Operation, 0, len(r.Operations))
@@ -18,8 +21,13 @@ func (r *Result) ToUnifiedResult() *specmodel.Result {
 			})
 		}
 		var security []specmodel.SecurityRequirement
+		var rights []string
 		if len(op.Security) > 0 {
-			security = append(security, specmodel.SecurityRequirement{Scheme: "oauth2", Scopes: op.Security})
+			var oauthScopes []string
+			rights, oauthScopes = authscope.PartitionTokens(op.Security, nil)
+			if len(oauthScopes) > 0 {
+				security = append(security, specmodel.SecurityRequirement{Scheme: "oauth2", Scopes: oauthScopes})
+			}
 		}
 		ops = append(ops, &specmodel.Operation{
 			Path:            op.Path,
@@ -33,6 +41,7 @@ func (r *Result) ToUnifiedResult() *specmodel.Result {
 			ResponseType:    op.ResponseType,
 			ResponseStatus:  op.ResponseStatus,
 			Security:        security,
+			Rights:          rights,
 			File:            op.File,
 			Line:            op.Line,
 			Column:          op.Column,

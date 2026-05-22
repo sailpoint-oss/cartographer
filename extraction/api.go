@@ -202,6 +202,8 @@ func FindPythonSourceDirs(root string) []string {
 	candidates := []string{
 		filepath.Join(root, "src"),
 		filepath.Join(root, "app"),
+		filepath.Join(root, "api"),
+		filepath.Join(root, "service"),
 		filepath.Join(root, "server"),
 	}
 	var found []string
@@ -271,6 +273,12 @@ func doGoExtract(opts Options) (*Result, error) {
 		TreeShake:       true,
 	}
 
+	authScope, err := AuthApplyOptions(opts.Extraction)
+	if err != nil {
+		return nil, fmt.Errorf("auth scope options: %w", err)
+	}
+	genCfg.AuthScope = authScope
+
 	specMap := specgen.Generate(metadata, extractor, genCfg)
 
 	if info, ok := specMap["info"].(map[string]interface{}); ok {
@@ -323,6 +331,10 @@ func doCanonicalExtract(opts Options, path string) (*Result, error) {
 	}
 	spec.SpecMap["info"] = info
 
+	if err := ApplyAuthScopeTranslation(ToAnySpecMap(spec.SpecMap), opts.Extraction, true); err != nil {
+		return nil, fmt.Errorf("auth scope translation: %w", err)
+	}
+
 	return &Result{
 		SpecMap:       spec.SpecMap,
 		Operations:    spec.Operations,
@@ -357,6 +369,10 @@ func doJavaExtract(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("java extraction: %w", err)
 	}
 
+	authScope, err := AuthApplyOptions(opts.Extraction)
+	if err != nil {
+		return nil, fmt.Errorf("auth scope options: %w", err)
+	}
 	specMap := javaextract.GenerateSpec(result, javaextract.SpecConfig{
 		Title:           opts.Title,
 		Version:         opts.Version,
@@ -365,7 +381,12 @@ func doJavaExtract(opts Options) (*Result, error) {
 		ServiceTemplate: opts.Template,
 		TreeShake:       true,
 		ErrorSchema:     opts.Extraction.ErrorSchema,
+		AuthScope:       authScope,
 	})
+
+	if opts.Extraction.MergeCoLocatedOpenAPI {
+		applyCoLocatedOpenAPIMerge(opts.RootDir, specMap)
+	}
 
 	return &Result{
 		SpecMap:    specMap,
@@ -390,6 +411,10 @@ func doTypeScriptExtract(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("typescript extraction: %w", err)
 	}
 
+	authScope, err := AuthApplyOptions(opts.Extraction)
+	if err != nil {
+		return nil, fmt.Errorf("auth scope options: %w", err)
+	}
 	specMap := tsextract.GenerateSpec(result, tsextract.SpecConfig{
 		Title:           opts.Title,
 		Version:         opts.Version,
@@ -397,6 +422,8 @@ func doTypeScriptExtract(opts Options) (*Result, error) {
 		OpenAPIVersion:  "3.2",
 		ServiceTemplate: opts.Template,
 		TreeShake:       true,
+		ErrorSchema:     opts.Extraction.ErrorSchema,
+		AuthScope:       authScope,
 	})
 
 	return &Result{
@@ -422,6 +449,10 @@ func doPythonExtract(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("python extraction: %w", err)
 	}
 
+	authScope, err := AuthApplyOptions(opts.Extraction)
+	if err != nil {
+		return nil, fmt.Errorf("auth scope options: %w", err)
+	}
 	specMap := pythonextract.GenerateSpec(result, pythonextract.SpecConfig{
 		Title:           opts.Title,
 		Version:         opts.Version,
@@ -429,6 +460,8 @@ func doPythonExtract(opts Options) (*Result, error) {
 		OpenAPIVersion:  "3.2",
 		ServiceTemplate: opts.Template,
 		TreeShake:       true,
+		ErrorSchema:     opts.Extraction.ErrorSchema,
+		AuthScope:       authScope,
 	})
 
 	return &Result{
@@ -449,6 +482,10 @@ func doCSharpExtract(opts Options) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("csharp extraction: %w", err)
 	}
+	authScope, err := AuthApplyOptions(opts.Extraction)
+	if err != nil {
+		return nil, fmt.Errorf("auth scope options: %w", err)
+	}
 	specMap := csharpextract.GenerateSpec(result, csharpextract.SpecConfig{
 		Title:           opts.Title,
 		Version:         opts.Version,
@@ -456,6 +493,8 @@ func doCSharpExtract(opts Options) (*Result, error) {
 		OpenAPIVersion:  "3.2",
 		ServiceTemplate: opts.Template,
 		TreeShake:       true,
+		ErrorSchema:     opts.Extraction.ErrorSchema,
+		AuthScope:       authScope,
 	})
 	return &Result{
 		SpecMap:    specMap,

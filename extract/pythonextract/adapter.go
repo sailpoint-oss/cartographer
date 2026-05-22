@@ -1,6 +1,7 @@
 package pythonextract
 
 import (
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/specmodel"
 )
 
@@ -25,17 +26,24 @@ func convertPythonOperation(op *Operation) *specmodel.Operation {
 	}
 
 	var security []specmodel.SecurityRequirement
-	if op.RequiresAuth {
-		scheme := "bearerAuth"
-		if len(op.Security) > 0 {
-			scheme = op.Security[0]
+	var rights []string
+	if op.RequiresAuth && len(op.Security) > 0 {
+		scheme := op.Security[0]
+		tokens := op.Security[1:]
+		if len(tokens) == 0 {
+			tokens = []string{scheme}
+			scheme = "oauth2"
 		}
-		scopes := []string{}
-		if len(op.Security) > 1 {
-			scopes = op.Security[1:]
+		var oauthScopes []string
+		rights, oauthScopes = authscope.PartitionTokens(tokens, nil)
+		if len(oauthScopes) > 0 {
+			security = []specmodel.SecurityRequirement{
+				{Scheme: scheme, Scopes: oauthScopes},
+			}
 		}
+	} else if op.RequiresAuth {
 		security = []specmodel.SecurityRequirement{
-			{Scheme: scheme, Scopes: scopes},
+			{Scheme: "bearerAuth", Scopes: nil},
 		}
 	}
 
@@ -52,6 +60,7 @@ func convertPythonOperation(op *Operation) *specmodel.Operation {
 		ResponseStatus:      op.ResponseStatus,
 		Deprecated:          op.Deprecated,
 		Security:            security,
+		Rights:              rights,
 		ConsumesContentType: op.ConsumesContentType,
 		ProducesContentType: op.ProducesContentType,
 		File:                op.File,

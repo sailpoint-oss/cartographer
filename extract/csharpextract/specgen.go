@@ -3,6 +3,7 @@ package csharpextract
 import (
 	"strings"
 
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/index"
 	"github.com/sailpoint-oss/cartographer/extract/sharedspec"
 	"github.com/sailpoint-oss/cartographer/extract/specmodel"
@@ -15,6 +16,8 @@ type SpecConfig struct {
 	OpenAPIVersion  string
 	ServiceTemplate string
 	TreeShake       bool
+	ErrorSchema     string
+	AuthScope       authscope.ApplyOptions
 }
 
 func GenerateSpec(result *Result, cfg SpecConfig) map[string]any {
@@ -25,6 +28,8 @@ func GenerateSpec(result *Result, cfg SpecConfig) map[string]any {
 		OpenAPIVersion:  cfg.OpenAPIVersion,
 		ServiceTemplate: cfg.ServiceTemplate,
 		TreeShake:       cfg.TreeShake,
+		ErrorSchema:     cfg.ErrorSchema,
+		AuthScope:       cfg.AuthScope,
 	}, &adapter{})
 }
 

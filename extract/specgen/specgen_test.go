@@ -41,7 +41,7 @@ func TestBuildOperation_ExperimentalPrivate(t *testing.T) {
 				Experimental: tt.experimental,
 				Private:      tt.private,
 			}
-			result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+			result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 			_, hasExp := result["x-experimental"]
 			_, hasInt := result["x-internal"]
@@ -65,7 +65,7 @@ func TestBuildOperation_AuthTypes(t *testing.T) {
 			RequiresAuth: true, UserAuth: true,
 			Rights: []string{"read"},
 		}
-		result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+		result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 		if result["x-auth-type"] != "user" {
 			t.Errorf("x-auth-type: got %v, want \"user\"", result["x-auth-type"])
@@ -78,7 +78,7 @@ func TestBuildOperation_AuthTypes(t *testing.T) {
 			RequiresAuth: true, ApplicationAuth: true,
 			Rights: []string{"admin"},
 		}
-		result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+		result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 		if result["x-auth-type"] != "application" {
 			t.Errorf("x-auth-type: got %v, want \"application\"", result["x-auth-type"])
@@ -91,7 +91,7 @@ func TestBuildOperation_AuthTypes(t *testing.T) {
 			RequiresAuth: true, Unprotected: true,
 			Rights: []string{"read"},
 		}
-		result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+		result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 		sec, ok := result["security"].([]interface{})
 		if !ok {
@@ -106,7 +106,7 @@ func TestBuildOperation_AuthTypes(t *testing.T) {
 		op := &goextract.OperationInfo{
 			ID: "noAuthOp", Path: "/test", Method: "GET",
 		}
-		result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+		result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 		if _, ok := result["x-auth-type"]; ok {
 			t.Error("x-auth-type should not be present when neither UserAuth nor ApplicationAuth is set")
@@ -124,7 +124,7 @@ func TestBuildOperation_FormParams(t *testing.T) {
 			{Name: "age", Type: "int", Required: false},
 		},
 	}
-	result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+	result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 	rb, ok := result["requestBody"].(map[string]interface{})
 	if !ok {
@@ -175,7 +175,7 @@ func TestBuildOperation_FormParamsNotOverrideRequestType(t *testing.T) {
 			{Name: "field", Type: "string"},
 		},
 	}
-	result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+	result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 	rb := result["requestBody"].(map[string]interface{})
 	content := rb["content"].(map[string]interface{})
@@ -197,7 +197,7 @@ func TestBuildOperation_PathParamDescriptions(t *testing.T) {
 			{Name: "id", Type: "string", Description: "The user identifier"},
 		},
 	}
-	result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+	result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 	params, ok := result["parameters"].([]interface{})
 	if !ok || len(params) == 0 {
@@ -217,7 +217,7 @@ func TestBuildOperation_PathParamNoDescription(t *testing.T) {
 			{Name: "itemId", Type: "string"},
 		},
 	}
-	result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+	result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 	params := result["parameters"].([]interface{})
 	param := params[0].(map[string]interface{})
@@ -272,7 +272,7 @@ func TestBuildOperation_Examples(t *testing.T) {
 			{Summary: "full", Value: map[string]interface{}{"id": "456", "name": "test"}},
 		},
 	}
-	result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+	result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 	responses := result["responses"].(map[string]interface{})
 	resp200 := responses["200"].(map[string]interface{})
@@ -299,7 +299,7 @@ func TestBuildOperation_NoExamplesWhenEmpty(t *testing.T) {
 		ID: "noExOp", Path: "/data", Method: "GET",
 		ResponseType: "DataResponse",
 	}
-	result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+	result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 	responses := result["responses"].(map[string]interface{})
 	resp200 := responses["200"].(map[string]interface{})
@@ -319,7 +319,7 @@ func TestBuildOperation_RequestContentType(t *testing.T) {
 			ID: "jsonReq", Path: "/upload", Method: "POST",
 			RequestType: "Payload",
 		}
-		result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+		result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 		rb := result["requestBody"].(map[string]interface{})
 		content := rb["content"].(map[string]interface{})
@@ -334,7 +334,7 @@ func TestBuildOperation_RequestContentType(t *testing.T) {
 			RequestType:    "Payload",
 			RequestContent: "application/xml",
 		}
-		result := buildOperation(op, newTestNormalizer(), newTestErrorAnalyzer())
+		result := buildOperation(op, Config{}, newTestNormalizer(), newTestErrorAnalyzer())
 
 		rb := result["requestBody"].(map[string]interface{})
 		content := rb["content"].(map[string]interface{})

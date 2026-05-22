@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/generics"
 	"github.com/sailpoint-oss/cartographer/extract/sourceloc"
 	"github.com/sailpoint-oss/cartographer/extract/specmodel"
@@ -81,6 +82,11 @@ func GenerateSpec(result *specmodel.Result, cfg specmodel.SpecConfig, adapter La
 
 	if cfg.TreeShake {
 		TreeShake(spec)
+	}
+
+	if cfg.AuthScope.Enabled {
+		st := authscope.EnrichSpec(spec, cfg.AuthScope, false)
+		authscope.MergeDiagnostics(spec, st)
 	}
 
 	return spec
@@ -331,8 +337,16 @@ func buildOperation(op *specmodel.Operation, result *specmodel.Result, cfg specm
 		operation["x-rate-limited"] = true
 	}
 
-	// Security
-	if len(op.Security) > 0 {
+	// Security: translate AMS rights to PAT scopes when enabled.
+	rights := append([]string(nil), op.Rights...)
+	if len(rights) == 0 {
+		for _, sec := range op.Security {
+			rights = append(rights, sec.Scopes...)
+		}
+	}
+	if cfg.AuthScope.Enabled && cfg.AuthScope.Mapping != nil && len(rights) > 0 {
+		authscope.ApplyToOperation(operation, rights, cfg.AuthScope)
+	} else if len(op.Security) > 0 {
 		var secList []any
 		for _, sec := range op.Security {
 			scopes := make([]any, len(sec.Scopes))

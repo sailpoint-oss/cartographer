@@ -280,7 +280,9 @@ func parsePythonFieldAssignment(node *tree_sitter.Node, source []byte) FieldDecl
 			if desc := props["description"]; desc != "" {
 				fd.Description = desc
 			}
-			if alias := props["alias"]; alias != "" {
+			if alias := props["serialization_alias"]; alias != "" {
+				fd.JSONName = alias
+			} else if alias := props["alias"]; alias != "" {
 				fd.JSONName = alias
 			}
 			if ex := props["example"]; ex != "" {

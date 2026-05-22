@@ -200,3 +200,22 @@ public class WidgetDto {
 		t.Errorf("required = %v, want [name]", required)
 	}
 }
+
+func TestExtractCSharpJsonWireName(t *testing.T) {
+	attrs := `[JsonPropertyName("user_id")] `
+	if got := extractCSharpJsonWireName(attrs); got != "user_id" {
+		t.Fatalf("got %q", got)
+	}
+	text := `[JsonPropertyName("user_id")] public string UserId { get; set; }
+public string DisplayName { get; set; }`
+	props := parseProperties(text)
+	if len(props) != 2 {
+		t.Fatalf("expected 2 properties, got %d: %#v", len(props), props)
+	}
+	if props[0].Name != "user_id" {
+		t.Fatalf("first wire name = %q", props[0].Name)
+	}
+	if props[1].Name != "displayName" {
+		t.Fatalf("second wire name = %q", props[1].Name)
+	}
+}

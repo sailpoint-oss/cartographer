@@ -81,6 +81,10 @@ go work use ../navigator ../barrelman
 
 - Do not reintroduce orchestration packages into this repo.
 - Keep `.cartographer/cartographer.yaml` service-local.
+- **Public-repo anonymization** — Cartographer must not contain internal service
+  identifiers, fleet inventory, or fixtures copied from private codebases. All
+  `extract/testdata/**`, inline tests, and examples use fictional `com.example` /
+  `example.com` material and generic API vocabulary. See [docs/ANONYMIZATION.md](docs/ANONYMIZATION.md).
 
 ## CI/CD
 

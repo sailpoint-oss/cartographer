@@ -22,10 +22,23 @@ components:
                 id:
                     type: string
             type: object
+    securitySchemes:
+        oauth2:
+            flows:
+                clientCredentials:
+                    scopes:
+                        example:resource:read: Read example resources
+                    tokenUrl: https://{tenant}.api.example.com/oauth/token
+            type: oauth2
 info:
     title: Upstream Fixture API
     version: "1.0"
     x-cartographer-diagnostics:
+        auth:
+            operationsWithRights: 1
+            operationsWithScopes: 1
+            operationsWithUnmappedRights: 0
+            unmappedRightsSample: []
         controllers: 6
         operations: 7
         unmappedHandlerMethods: 0
@@ -113,9 +126,14 @@ paths:
                                     type: string
                                 type: array
                     description: List of Entries
+            security:
+                - oauth2:
+                    - example:resource:read
             summary: List Entries
             tags:
                 - Scoped
+            x-sailpoint-required-rights:
+                - example:resource:read
     /api/v1/widgets:
         post:
             description: Create a new Widget.

@@ -735,7 +735,7 @@ func (ra *RouterAnalyzer) isStringArg(expr ast.Expr) bool {
 func (ra *RouterAnalyzer) extractRightString(expr ast.Expr, info *types.Info) string {
 	switch e := expr.(type) {
 	case *ast.BasicLit:
-		// String literal: "sp:scope:read"
+		// String literal: "api:scope:read"
 		if e.Kind == token.STRING && len(e.Value) >= 2 {
 			return e.Value[1 : len(e.Value)-1]
 		}

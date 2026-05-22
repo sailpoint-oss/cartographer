@@ -16,6 +16,9 @@ on:
       - README.md
       - CLAUDE.md
       - Makefile
+      - docs/**
+      - scripts/**
+      - .cursor/**
 
 permissions:
   contents: read

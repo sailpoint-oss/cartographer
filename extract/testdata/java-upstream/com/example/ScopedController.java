@@ -9,6 +9,7 @@ import java.util.List;
 public class ScopedController {
 
     @org.springframework.web.bind.annotation.GetMapping("/entries")
+    @RequireRight("example:resource:read")
     public List<String> listEntries() {
         return null;
     }

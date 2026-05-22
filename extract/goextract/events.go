@@ -57,7 +57,7 @@ func (ea *EventAnalyzer) AnalyzeFile(file *ast.File, info *types.Info, filePath 
 // collectTopicConstants scans for topic constant declarations.
 // Patterns:
 //   - const TopicName TopicDescriptor = "topic-name"
-//   - var TopicGovernanceGroup = idn.Topic("governance-group-v1")
+//   - var TopicResourceGroup = events.Topic("resource-group-v1")
 func (ea *EventAnalyzer) collectTopicConstants(file *ast.File, info *types.Info) {
 	for _, decl := range file.Decls {
 		genDecl, ok := decl.(*ast.GenDecl)
@@ -94,7 +94,7 @@ func (ea *EventAnalyzer) extractTopicValue(expr ast.Expr, info *types.Info) stri
 			return e.Value[1 : len(e.Value)-1]
 		}
 	case *ast.CallExpr:
-		// Pattern: idn.Topic("topic-name") or TopicDescriptor("topic-name")
+		// Pattern: pkg.Topic("topic-name") or TopicDescriptor("topic-name")
 		if len(e.Args) > 0 {
 			if lit, ok := e.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING && len(lit.Value) >= 2 {
 				return lit.Value[1 : len(lit.Value)-1]
@@ -296,7 +296,7 @@ func (ea *EventAnalyzer) extractTopicFromArg(arg ast.Expr, info *types.Info) str
 		return ea.convertTopicIdentifier(e.Name)
 
 	case *ast.SelectorExpr:
-		// Package.Constant pattern: idn.TopicGovernanceGroup
+		// Package.Constant pattern: events.TopicResourceGroup
 		if topic := ea.resolveSelectorTopic(e, info); topic != "" {
 			return topic
 		}
@@ -322,14 +322,14 @@ func (ea *EventAnalyzer) resolveSelectorTopic(sel *ast.SelectorExpr, info *types
 }
 
 // convertTopicIdentifier converts a Go identifier to a topic name.
-// e.g., "TopicGovernanceGroup" -> "governance-group"
-// e.g., "TOPIC_IDENTITY_CREATED" -> "identity-created"
+// e.g., "TopicResourceGroup" -> "resource-group"
+// e.g., "TOPIC_ORDER_CREATED" -> "order-created"
 func (ea *EventAnalyzer) convertTopicIdentifier(name string) string {
-	// Remove common prefixes
+	// Remove common topic constant prefixes.
 	name = strings.TrimPrefix(name, "Topic")
 	name = strings.TrimPrefix(name, "TOPIC_")
-	name = strings.TrimPrefix(name, "Idn")
-	name = strings.TrimPrefix(name, "IDN_")
+	name = strings.TrimPrefix(name, "Pkg")
+	name = strings.TrimPrefix(name, "PKG_")
 
 	if name == "" {
 		return ""

@@ -432,6 +432,18 @@ func (e *Extractor) analyzeFuncDecl(funcDecl *ast.FuncDecl, file *ast.File, file
 	// Analyze the function body for handler patterns
 	handlerInfo := e.handlerAnalyzer.AnalyzeHandler(funcDecl, file, pkg.TypesInfo)
 
+	// RestEndpoint.BuildRoutes implementations register mux/chi routes inline.
+	if isBuildRoutesMethod(funcDecl) {
+		ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if routeInfo := e.routerAnalyzer.AnalyzeMuxPathMethodHandler(call, file, pkg.TypesInfo, e.fset); routeInfo != nil {
+					e.registerRoute(routeInfo, filename, call.Pos())
+				}
+			}
+			return true
+		})
+	}
+
 	// If this looks like a handler function, store the information
 	if handlerInfo != nil {
 		// Store for later association with routes

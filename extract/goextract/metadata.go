@@ -33,13 +33,13 @@ type ExtractedMetadata struct {
 // WebhookInfo represents a webhook event that the service can publish.
 // Used to generate the OpenAPI webhooks section (OpenAPI 3.1+).
 type WebhookInfo struct {
-	// Name is the webhook identifier, e.g., "governanceGroupCreated"
+	// Name is the webhook identifier, e.g., "resourceGroupCreated"
 	Name string `json:"name"`
 
-	// EventType is the event type string, e.g., "GOVERNANCE_GROUP"
+	// EventType is the event type string, e.g., "RESOURCE_GROUP"
 	EventType string `json:"eventType"`
 
-	// Topic is the Kafka/Iris topic name, e.g., "governance-group-v1"
+	// Topic is the messaging topic name, e.g., "resource-group-v1"
 	Topic string `json:"topic"`
 
 	// Summary is a short description of the webhook

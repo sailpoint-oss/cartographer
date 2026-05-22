@@ -3,7 +3,10 @@
 // result types into this model before passing to sharedspec.
 package specmodel
 
-import "github.com/sailpoint-oss/cartographer/extract/index"
+import (
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
+	"github.com/sailpoint-oss/cartographer/extract/index"
+)
 
 // Result holds unified extraction results for spec generation.
 type Result struct {
@@ -29,6 +32,8 @@ type Operation struct {
 	Deprecated             bool
 	DeprecatedSince        string
 	Security               []SecurityRequirement
+	// Rights are AMS permission strings from @RequireRight and similar (not PAT scopes).
+	Rights []string
 	ConsumesContentType    string
 	ProducesContentType    string
 	ReturnDescription      string
@@ -91,6 +96,8 @@ type SpecConfig struct {
 	TreeShake       bool
 	// ErrorSchema: "" (code-only), "legacy-error-response", or "problem-details".
 	ErrorSchema string
+	// AuthScope enables rights→scope translation on emitted operations.
+	AuthScope authscope.ApplyOptions
 }
 
 // ErrorResponseSchema maps HTTP status codes to response body schema type names

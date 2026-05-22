@@ -242,6 +242,13 @@ func extractTSClassFields(body *tree_sitter.Node, source []byte) []FieldDecl {
 			Column:      int(fieldPos.Column) + 1,
 		}
 
+		// NestJS @ApiProperty({ name: 'wire_name', description: '...' })
+		if ap, ok := annotations["ApiProperty"]; ok && ap != "" {
+			if wire := extractTSObjectFieldValue(ap, "name"); wire != "" {
+				fd.JSONName = wire
+			}
+		}
+
 		// v5 #10: Check for @deprecated JSDoc tag on preceding comment
 		if prev := child.PrevSibling(); prev != nil {
 			if prev.Kind() == "comment" || prev.Kind() == "block_comment" {

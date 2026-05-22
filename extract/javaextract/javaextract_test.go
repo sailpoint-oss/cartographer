@@ -1370,17 +1370,17 @@ func TestSecurityExtraction(t *testing.T) {
 
 	for _, op := range result.Operations {
 		if op.OperationID == "listReports" {
-			if len(op.Security) == 0 {
-				t.Error("listReports should have security from @PreAuthorize")
-			} else if op.Security[0] != "api:reports:read" {
-				t.Errorf("listReports security = %v, want [api:reports:read]", op.Security)
+			if len(op.Rights) == 0 {
+				t.Error("listReports should have rights from @PreAuthorize")
+			} else if op.Rights[0] != "api:reports:read" {
+				t.Errorf("listReports rights = %v, want [api:reports:read]", op.Rights)
 			}
 		}
 		if op.OperationID == "createReport" {
-			if len(op.Security) == 0 {
-				t.Error("createReport should have security from @SecurityRequirement")
-			} else if op.Security[0] != "api:reports:write" {
-				t.Errorf("createReport security = %v, want [api:reports:write]", op.Security)
+			if len(op.OAuthScopes) == 0 {
+				t.Error("createReport should have OAuth scopes from @SecurityRequirement")
+			} else if op.OAuthScopes[0] != "api:reports:write" {
+				t.Errorf("createReport oauthScopes = %v, want [api:reports:write]", op.OAuthScopes)
 			}
 		}
 	}
@@ -1746,8 +1746,8 @@ func TestParameterAnnotationParsing(t *testing.T) {
 func TestBuildSecuritySchemes(t *testing.T) {
 	result := &Result{
 		Operations: []*Operation{
-			{Security: []string{"api:read", "api:write"}},
-			{Security: []string{"api:read"}},
+			{OAuthScopes: []string{"api:read", "api:write"}},
+			{OAuthScopes: []string{"api:read"}},
 		},
 		Schemas: make(map[string]interface{}),
 		Types:   make(map[string]*index.TypeDecl),
@@ -2016,7 +2016,7 @@ public class TagsResource {
 	}
 
 	for _, op := range result.Operations {
-		t.Logf("  %s %s security=%v", op.Method, op.Path, op.Security)
+		t.Logf("  %s %s rights=%v", op.Method, op.Path, op.Rights)
 	}
 
 	// Find the GET operation
@@ -2033,15 +2033,15 @@ public class TagsResource {
 	if getOp == nil {
 		t.Fatal("missing GET operation")
 	}
-	if len(getOp.Security) != 1 || getOp.Security[0] != "api:tags:read" {
-		t.Errorf("GET security = %v, want [api:tags:read]", getOp.Security)
+	if len(getOp.Rights) != 1 || getOp.Rights[0] != "api:tags:read" {
+		t.Errorf("GET rights = %v, want [api:tags:read]", getOp.Rights)
 	}
 
 	if deleteOp == nil {
 		t.Fatal("missing DELETE operation")
 	}
-	if len(deleteOp.Security) != 2 {
-		t.Errorf("DELETE security = %v, want [api:tags:delete, api:tags:manage]", deleteOp.Security)
+	if len(deleteOp.Rights) != 2 {
+		t.Errorf("DELETE rights = %v, want [api:tags:delete, api:tags:manage]", deleteOp.Rights)
 	}
 }
 
@@ -2119,8 +2119,8 @@ public class ReportsController {
 	}
 
 	for _, op := range result.Operations {
-		if len(op.Security) == 0 || op.Security[0] != "api:reports:read" {
-			t.Errorf("%s %s: expected class-level security [api:reports:read], got %v", op.Method, op.Path, op.Security)
+		if len(op.Rights) == 0 || op.Rights[0] != "api:reports:read" {
+			t.Errorf("%s %s: expected class-level rights [api:reports:read], got %v", op.Method, op.Path, op.Rights)
 		}
 	}
 }

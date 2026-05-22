@@ -261,8 +261,13 @@ func extractFileOperations(root *tree_sitter.Node, source []byte, filePath strin
 				}
 			}
 		case "function_definition":
-			// async def routes declared via app.add_route -- we only catch the
-			// handler here; the routing call is handled above.
+			if isFactoryAppFunction(child, source) {
+				bodyOps, f := extractFunctionBodyOperations(child, source, filePath, idx, prefixes)
+				ops = append(ops, bodyOps...)
+				if f != "" {
+					framework = mergeFramework(framework, f)
+				}
+			}
 		}
 	}
 
@@ -810,7 +815,7 @@ func buildOperationFromFunc(funcDef *tree_sitter.Node, source []byte, filePath s
 	op.Column = int(pos.Column) + 1
 
 	if params != nil {
-		op.Parameters, op.RequestBodyType, op.RequiresAuth = parseHandlerParameters(params, source, rd.Path, idx)
+		op.Parameters, op.RequestBodyType, op.RequiresAuth, op.Security = parseHandlerParameters(params, source, rd.Path, idx)
 	}
 
 	return op
@@ -818,11 +823,12 @@ func buildOperationFromFunc(funcDef *tree_sitter.Node, source []byte, filePath s
 
 // parseHandlerParameters converts the function signature into OpenAPI
 // parameters. Path parameters are inferred from rd.Path ({name} syntax);
-// body params are BaseModel types; Depends(...) parameters signal auth.
-func parseHandlerParameters(params *tree_sitter.Node, source []byte, routePath string, idx *index.Index) ([]*Parameter, string, bool) {
+// body params are BaseModel types; Depends(...) / Security(...) signal auth.
+func parseHandlerParameters(params *tree_sitter.Node, source []byte, routePath string, idx *index.Index) ([]*Parameter, string, bool, []string) {
 	var out []*Parameter
 	requestBody := ""
 	requiresAuth := false
+	var security []string
 
 	pathParams := extractPathParamNames(routePath)
 
@@ -833,6 +839,10 @@ func parseHandlerParameters(params *tree_sitter.Node, source []byte, routePath s
 			// self / cls — skip
 			continue
 		case "typed_parameter", "typed_default_parameter", "default_parameter":
+			if sec := parseParameterSecurity(p, source); len(sec) > 0 {
+				requiresAuth = true
+				security = append(security, sec...)
+			}
 			pm := parseTypedParameter(p, source, pathParams, idx)
 			if pm == nil {
 				continue
@@ -850,7 +860,73 @@ func parseHandlerParameters(params *tree_sitter.Node, source []byte, routePath s
 		}
 	}
 
-	return out, requestBody, requiresAuth
+	return out, requestBody, requiresAuth, security
+}
+
+// parseParameterSecurity returns oauth2 + scope tokens when a parameter default is Security(...).
+func parseParameterSecurity(p *tree_sitter.Node, source []byte) []string {
+	defaultValue := ""
+	if right := p.ChildByFieldName("value"); right != nil {
+		defaultValue = strings.TrimSpace(right.Utf8Text(source))
+	}
+	if !strings.HasPrefix(defaultValue, "Security(") {
+		return nil
+	}
+	scopes := parseFastAPISecurity(defaultValue)
+	if len(scopes) == 0 {
+		return []string{"oauth2"}
+	}
+	out := []string{"oauth2"}
+	return append(out, scopes...)
+}
+
+// parseFastAPISecurity extracts scope strings from Security(..., scopes=[...]).
+func parseFastAPISecurity(call string) []string {
+	idx := strings.Index(call, "scopes")
+	if idx < 0 {
+		return nil
+	}
+	rest := call[idx:]
+	bracket := strings.Index(rest, "[")
+	if bracket < 0 {
+		return extractQuotedStrings(rest)
+	}
+	end := strings.Index(rest[bracket:], "]")
+	if end < 0 {
+		return extractQuotedStrings(rest)
+	}
+	return extractQuotedStrings(rest[bracket : bracket+end+1])
+}
+
+func extractQuotedStrings(s string) []string {
+	var out []string
+	for {
+		q := strings.Index(s, "'")
+		dq := strings.Index(s, "\"")
+		start := -1
+		quote := byte(0)
+		if q >= 0 && (dq < 0 || q < dq) {
+			start = q
+			quote = '\''
+		} else if dq >= 0 {
+			start = dq
+			quote = '"'
+		}
+		if start < 0 {
+			break
+		}
+		s = s[start+1:]
+		end := strings.IndexByte(s, quote)
+		if end < 0 {
+			break
+		}
+		tok := strings.TrimSpace(s[:end])
+		if tok != "" && tok != "scopes" {
+			out = append(out, tok)
+		}
+		s = s[end+1:]
+	}
+	return out
 }
 
 func parseTypedParameter(p *tree_sitter.Node, source []byte, pathParams map[string]bool, idx *index.Index) *Parameter {
@@ -1219,4 +1295,54 @@ func parsePyprojectMetadata(s string) ProjectMetadata {
 		}
 	}
 	return meta
+}
+
+func isFactoryAppFunction(node *tree_sitter.Node, source []byte) bool {
+	nameNode := node.ChildByFieldName("name")
+	if nameNode == nil {
+		return false
+	}
+	switch nameNode.Utf8Text(source) {
+	case "create_app", "build_app", "get_app", "make_app":
+		return true
+	default:
+		return false
+	}
+}
+
+// extractFunctionBodyOperations scans factory app functions for route
+// decorators and include_router calls (common in agent services).
+func extractFunctionBodyOperations(fn *tree_sitter.Node, source []byte, filePath string, idx *index.Index, prefixes map[string]string) ([]*Operation, string) {
+	body := fn.ChildByFieldName("body")
+	if body == nil {
+		return nil, ""
+	}
+	var ops []*Operation
+	framework := ""
+	var walk func(*tree_sitter.Node)
+	walk = func(n *tree_sitter.Node) {
+		switch n.Kind() {
+		case "decorated_definition":
+			if op, f := extractDecoratedRoute(n, source, filePath, idx, prefixes); op != nil {
+				ops = append(ops, op)
+				if f != "" {
+					framework = mergeFramework(framework, f)
+				}
+			}
+		case "expression_statement":
+			for i := uint(0); i < n.ChildCount(); i++ {
+				if inner := n.Child(i); inner.Kind() == "call" {
+					if extracted := extractAddRouteCall(inner, source, filePath); extracted != nil {
+						ops = append(ops, extracted)
+						framework = mergeFramework(framework, "starlette")
+					}
+				}
+			}
+		}
+		for i := uint(0); i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(body)
+	return ops, framework
 }

@@ -65,7 +65,7 @@ func setupRouter() {
 	}
 
 	if routeInfo.Rights[0] != "api:test:read" {
-		t.Errorf("Expected right sp:test:read, got %s", routeInfo.Rights[0])
+		t.Errorf("Expected right api:test:read, got %s", routeInfo.Rights[0])
 	}
 }
 
@@ -191,7 +191,7 @@ func setupRouter() {
 	}
 
 	if routeInfo.Rights[0] != "api:test:read" {
-		t.Errorf("Expected right sp:test:read, got %s", routeInfo.Rights[0])
+		t.Errorf("Expected right api:test:read, got %s", routeInfo.Rights[0])
 	}
 }
 
@@ -267,7 +267,7 @@ func setupRouter() {
 				}
 
 				if routeInfo.Rights[0] != "api:test:read" {
-					t.Errorf("Expected right sp:test:read, got %s", routeInfo.Rights[0])
+					t.Errorf("Expected right api:test:read, got %s", routeInfo.Rights[0])
 				}
 			} else {
 				if routeInfo != nil && len(routeInfo.Rights) > 0 {
@@ -599,7 +599,7 @@ func setupRouter() {
 		}
 	}
 	if !found {
-		t.Errorf("Expected right 'sp:v1:access' from Use(), got %v", routeInfo.Rights)
+		t.Errorf("Expected right 'api:v1:access' from Use(), got %v", routeInfo.Rights)
 	}
 }
 
@@ -774,7 +774,7 @@ func TestRouteInfo(t *testing.T) {
 	}
 
 	if len(ri.Rights) != 1 || ri.Rights[0] != "api:users:read" {
-		t.Errorf("Expected rights ['sp:users:read'], got %v", ri.Rights)
+		t.Errorf("Expected rights ['api:users:read'], got %v", ri.Rights)
 	}
 }
 
@@ -790,7 +790,7 @@ func TestSubrouterContext(t *testing.T) {
 	}
 
 	if len(ctx.Rights) != 1 || ctx.Rights[0] != "api:api:access" {
-		t.Errorf("Expected rights ['sp:api:access'], got %v", ctx.Rights)
+		t.Errorf("Expected rights ['api:api:access'], got %v", ctx.Rights)
 	}
 }
 
@@ -1433,7 +1433,7 @@ func setupRouter() {
 		t.Fatalf("Expected rights from chi.With chain, got none")
 	}
 	if routeInfo.Rights[0] != "api:test:read" {
-		t.Fatalf("Expected first right sp:test:read, got %v", routeInfo.Rights)
+		t.Fatalf("Expected first right api:test:read, got %v", routeInfo.Rights)
 	}
 }
 

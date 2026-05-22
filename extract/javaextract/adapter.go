@@ -62,13 +62,14 @@ func convertJavaOperation(op *Operation) *specmodel.Operation {
 	}
 
 	var security []specmodel.SecurityRequirement
-	if len(op.Security) > 0 {
-		filtered := filterValidScopes(op.Security)
-		if len(filtered) > 0 {
-			security = []specmodel.SecurityRequirement{
-				{Scheme: "oauth2", Scopes: filtered},
-			}
+	if len(op.OAuthScopes) > 0 {
+		security = []specmodel.SecurityRequirement{
+			{Scheme: "oauth2", Scopes: filterValidScopes(op.OAuthScopes)},
 		}
+	}
+	rights := filterValidScopes(op.Rights)
+	if len(rights) == 0 && len(op.Security) > 0 {
+		rights = filterValidScopes(op.Security)
 	}
 
 	var annotated []specmodel.AnnotatedResponse
@@ -95,6 +96,7 @@ func convertJavaOperation(op *Operation) *specmodel.Operation {
 		Deprecated:             op.Deprecated,
 		DeprecatedSince:        op.DeprecatedSince,
 		Security:               security,
+		Rights:                 rights,
 		ConsumesContentType:    op.ConsumesContentType,
 		ProducesContentType:    op.ProducesContentType,
 		ReturnDescription:      op.ReturnDescription,

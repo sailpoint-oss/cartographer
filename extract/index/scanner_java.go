@@ -72,6 +72,7 @@ func (s *Scanner) extractJavaClass(node *tree_sitter.Node, source []byte, file, 
 	var discriminatorMapping map[string]string
 	readOnly := false
 	deprecated := false
+	jacksonNaming := ""
 	var classBodyNode *tree_sitter.Node
 
 	for i := uint(0); i < node.ChildCount(); i++ {
@@ -116,6 +117,9 @@ func (s *Scanner) extractJavaClass(node *tree_sitter.Node, source []byte, file, 
 					if annName == "Deprecated" {
 						deprecated = true
 					}
+					if annName == "JsonNaming" && annValue != "" {
+						jacksonNaming = parseJacksonNamingStrategy(annValue)
+					}
 				}
 			}
 		case "type_parameters":
@@ -141,6 +145,7 @@ func (s *Scanner) extractJavaClass(node *tree_sitter.Node, source []byte, file, 
 			}
 		case "class_body":
 			fields = extractJavaFields(child, source)
+			applyClassJacksonNaming(fields, jacksonNaming)
 			classBodyNode = child
 		}
 	}

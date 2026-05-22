@@ -3,6 +3,7 @@ package pythonextract
 import (
 	"strings"
 
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/index"
 	"github.com/sailpoint-oss/cartographer/extract/sharedspec"
 	"github.com/sailpoint-oss/cartographer/extract/specmodel"
@@ -17,6 +18,8 @@ type SpecConfig struct {
 	OpenAPIVersion  string // "3.1" or "3.2"
 	ServiceTemplate string
 	TreeShake       bool
+	ErrorSchema     string
+	AuthScope       authscope.ApplyOptions
 }
 
 // GenerateSpec converts Python extraction results into a complete OpenAPI spec.
@@ -42,6 +45,8 @@ func GenerateSpec(result *Result, cfg SpecConfig) map[string]any {
 		OpenAPIVersion:  cfg.OpenAPIVersion,
 		ServiceTemplate: cfg.ServiceTemplate,
 		TreeShake:       cfg.TreeShake,
+		ErrorSchema:     cfg.ErrorSchema,
+		AuthScope:       cfg.AuthScope,
 	}, adapter)
 
 	// Surface the detected framework so downstream analysis can behave

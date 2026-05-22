@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/goextract"
 	"github.com/sailpoint-oss/cartographer/extract/sharedspec"
 	"github.com/sailpoint-oss/cartographer/extract/sourceloc"
@@ -29,6 +30,7 @@ type Config struct {
 	IncludeWebhooks    bool   // Include webhook documentation (OpenAPI 3.1+)
 	WebhookFilter      string // Regex pattern to filter webhooks by name
 	TreeShake          bool   // Remove unused schemas from output
+	AuthScope          authscope.ApplyOptions
 }
 
 // Generate generates an OpenAPI specification from extracted metadata.
@@ -45,6 +47,18 @@ func Generate(metadata *goextract.ExtractedMetadata, extractor *goextract.Extrac
 	// Tree shake unused schemas
 	if cfg.TreeShake {
 		sharedspec.TreeShake(spec)
+	}
+
+	if cfg.AuthScope.Enabled {
+		anySpec := make(map[string]any)
+		for k, v := range spec {
+			anySpec[k] = v
+		}
+		st := authscope.EnrichSpec(anySpec, cfg.AuthScope, false)
+		authscope.MergeDiagnostics(anySpec, st)
+		for k, v := range anySpec {
+			spec[k] = v
+		}
 	}
 
 	return spec
@@ -278,7 +292,7 @@ func generateOpenAPISpec(metadata *goextract.ExtractedMetadata, config Config, s
 			paths[normalizedPath] = pathObj
 		}
 
-		operation := buildOperation(op, schemaNameNormalizer, errorSchemaAnalyzer)
+		operation := buildOperation(op, config, schemaNameNormalizer, errorSchemaAnalyzer)
 		pathObj.(map[string]interface{})[strings.ToLower(op.Method)] = operation
 	}
 
@@ -647,7 +661,7 @@ func ensureWrapperSchemas(schemas map[string]interface{}, originalToNormalized m
 }
 
 // buildOperation builds an OpenAPI operation object from OperationInfo.
-func buildOperation(op *goextract.OperationInfo, schemaNameNormalizer *goextract.SchemaNameNormalizer, errorSchemaAnalyzer *goextract.ErrorSchemaAnalyzer) map[string]interface{} {
+func buildOperation(op *goextract.OperationInfo, cfg Config, schemaNameNormalizer *goextract.SchemaNameNormalizer, errorSchemaAnalyzer *goextract.ErrorSchemaAnalyzer) map[string]interface{} {
 	operation := map[string]interface{}{}
 
 	if op.ID != "" {
@@ -992,27 +1006,38 @@ func buildOperation(op *goextract.OperationInfo, schemaNameNormalizer *goextract
 		operation["responses"] = responses
 	}
 
-	// Security -- emit userAuth/applicationAuth schemes to align with reference spec format
+	// Security -- translate rights to PAT scopes when auth mapping is enabled.
 	if op.Unprotected {
 		operation["security"] = []interface{}{}
 	} else if op.RequiresAuth && len(op.Rights) > 0 {
-		secReqs := []interface{}{}
-		if op.UserAuth {
-			secReqs = append(secReqs, map[string]interface{}{
-				"userAuth": op.Rights,
-			})
+		if cfg.AuthScope.Enabled && cfg.AuthScope.Mapping != nil {
+			anyOp := make(map[string]any)
+			for k, v := range operation {
+				anyOp[k] = v
+			}
+			authscope.ApplyToOperation(anyOp, op.Rights, cfg.AuthScope)
+			for k, v := range anyOp {
+				operation[k] = v
+			}
+		} else {
+			secReqs := []interface{}{}
+			if op.UserAuth {
+				secReqs = append(secReqs, map[string]interface{}{
+					"userAuth": op.Rights,
+				})
+			}
+			if op.ApplicationAuth {
+				secReqs = append(secReqs, map[string]interface{}{
+					"applicationAuth": op.Rights,
+				})
+			}
+			if len(secReqs) == 0 {
+				secReqs = append(secReqs, map[string]interface{}{
+					"oauth2": op.Rights,
+				})
+			}
+			operation["security"] = secReqs
 		}
-		if op.ApplicationAuth {
-			secReqs = append(secReqs, map[string]interface{}{
-				"applicationAuth": op.Rights,
-			})
-		}
-		if len(secReqs) == 0 {
-			secReqs = append(secReqs, map[string]interface{}{
-				"oauth2": op.Rights,
-			})
-		}
-		operation["security"] = secReqs
 	}
 	if op.UserAuth {
 		operation["x-auth-type"] = "user"
