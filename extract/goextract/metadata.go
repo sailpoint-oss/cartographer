@@ -33,13 +33,13 @@ type ExtractedMetadata struct {
 // WebhookInfo represents a webhook event that the service can publish.
 // Used to generate the OpenAPI webhooks section (OpenAPI 3.1+).
 type WebhookInfo struct {
-	// Name is the webhook identifier, e.g., "resourceGroupCreated"
+	// Name is the webhook identifier, e.g., "widgetCreated"
 	Name string `json:"name"`
 
-	// EventType is the event type string, e.g., "RESOURCE_GROUP"
+	// EventType is the event type string, e.g., "WIDGET"
 	EventType string `json:"eventType"`
 
-	// Topic is the messaging topic name, e.g., "resource-group-v1"
+	// Topic is the messaging topic name, e.g., "widget-events-v1"
 	Topic string `json:"topic"`
 
 	// Summary is a short description of the webhook
@@ -66,10 +66,10 @@ type WebhookInfo struct {
 // Supports hierarchical tags with parent relationships and classification.
 type TagInfo struct {
 	Name         string        `json:"name"`
-	Summary      string        `json:"summary,omitempty"`      // OpenAPI 3.2: short summary
+	Summary      string        `json:"summary,omitempty"` // OpenAPI 3.2: short summary
 	Description  string        `json:"description,omitempty"`
-	Parent       string        `json:"parent,omitempty"`       // OpenAPI 3.2: hierarchical parent tag
-	Kind         string        `json:"kind,omitempty"`         // OpenAPI 3.2: resource, action, collection, etc.
+	Parent       string        `json:"parent,omitempty"` // OpenAPI 3.2: hierarchical parent tag
+	Kind         string        `json:"kind,omitempty"`   // OpenAPI 3.2: resource, action, collection, etc.
 	ExternalDocs *ExternalDocs `json:"externalDocs,omitempty"`
 }
 
@@ -126,12 +126,12 @@ func mergeDocSources(existing []DocSource, incoming []DocSource) []DocSource {
 // OperationInfo contains metadata extracted for a single API operation.
 type OperationInfo struct {
 	// Operation identification
-	ID          string   `json:"id"`
-	Summary     string   `json:"summary,omitempty"`
-	Description string   `json:"description,omitempty"`
+	ID          string      `json:"id"`
+	Summary     string      `json:"summary,omitempty"`
+	Description string      `json:"description,omitempty"`
 	DocSources  []DocSource `json:"docSources,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	Deprecated  bool     `json:"deprecated,omitempty"`
+	Tags        []string    `json:"tags,omitempty"`
+	Deprecated  bool        `json:"deprecated,omitempty"`
 
 	// HTTP details
 	Path       string   `json:"path"`
@@ -145,11 +145,12 @@ type OperationInfo struct {
 	FormParamDetails   []OperationParamInfo `json:"formParamDetails,omitempty"`
 
 	// Request/Response
-	RequestType     string `json:"requestType,omitempty"`
-	RequestContent  string `json:"requestContent,omitempty"` // Content-Type
-	ResponseType    string `json:"responseType,omitempty"`
-	ResponseStatus  int    `json:"responseStatus,omitempty"`
-	ResponseContent string `json:"responseContent,omitempty"` // Content-Type
+	RequestType     string            `json:"requestType,omitempty"`
+	RequestContent  string            `json:"requestContent,omitempty"` // Content-Type
+	ResponseType    string            `json:"responseType,omitempty"`
+	ResponseStatus  int               `json:"responseStatus,omitempty"`
+	ResponseContent string            `json:"responseContent,omitempty"` // Content-Type
+	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
 
 	// Streaming response support (OpenAPI 3.2)
 	IsStreaming     bool   `json:"isStreaming,omitempty"`     // OpenAPI 3.2: indicates streaming response

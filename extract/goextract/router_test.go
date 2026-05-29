@@ -195,6 +195,64 @@ func setupRouter() {
 	}
 }
 
+func TestRouterAnalyzer_WrapperRequireRightFactoryHandler(t *testing.T) {
+	src := `
+package main
+
+import (
+	"net/http"
+	"github.com/gorilla/mux"
+)
+
+type Service struct{}
+
+func (s *Service) requireRight(handler http.Handler, right string) http.Handler {
+	return handler
+}
+
+func (s *Service) listApprovals() http.Handler {
+	return nil
+}
+
+func setupRouter() {
+	router := mux.NewRouter()
+	s := &Service{}
+	router.Handle("/api/approvals", s.requireRight(s.listApprovals(), "api:approval:read")).Methods("GET")
+}`
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("Failed to parse source: %v", err)
+	}
+
+	analyzer := NewRouterAnalyzer()
+	info := &types.Info{
+		Types: make(map[ast.Expr]types.TypeAndValue),
+	}
+
+	var routeInfo *RouteInfo
+	ast.Inspect(file, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if ri := analyzer.AnalyzeRouterCall(call, file, info, fset); ri != nil {
+				routeInfo = ri
+				return false
+			}
+		}
+		return true
+	})
+
+	if routeInfo == nil {
+		t.Fatal("Expected to find route info, got nil")
+	}
+	if routeInfo.HandlerName != "listApprovals" {
+		t.Fatalf("Expected wrapped handler listApprovals, got %q", routeInfo.HandlerName)
+	}
+	if len(routeInfo.Rights) != 1 || routeInfo.Rights[0] != "api:approval:read" {
+		t.Fatalf("Expected api:approval:read right, got %#v", routeInfo.Rights)
+	}
+}
+
 // TestRouterAnalyzer_WrapperRequireRights tests detection with alternative wrapper names.
 func TestRouterAnalyzer_WrapperRequireRights(t *testing.T) {
 	testCases := []struct {
@@ -523,6 +581,218 @@ func setupRouter() {
 	}
 }
 
+// TestRouterAnalyzer_RootPathPrefixCollapsesSlashes verifies that a
+// PathPrefix("/").Subrouter() root prefix does not produce a "//path" route.
+func TestRouterAnalyzer_RootPathPrefixCollapsesSlashes(t *testing.T) {
+	src := `
+package main
+
+import "github.com/gorilla/mux"
+
+func setupRouter() {
+	router := mux.NewRouter()
+	sub := router.PathPrefix("/").Subrouter()
+	var handler interface{}
+	sub.Handle("/streams", handler).Methods("GET")
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("Failed to parse source: %v", err)
+	}
+
+	analyzer := NewRouterAnalyzer()
+	info := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue)}
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		if assignStmt, ok := n.(*ast.AssignStmt); ok {
+			analyzer.AnalyzePathPrefix(assignStmt, info)
+		}
+		return true
+	})
+
+	var routeInfo *RouteInfo
+	ast.Inspect(file, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if ri := analyzer.AnalyzeRouterCall(call, file, info, fset); ri != nil {
+				routeInfo = ri
+				return false
+			}
+		}
+		return true
+	})
+
+	if routeInfo == nil {
+		t.Fatal("Expected to find route info, got nil")
+	}
+	if routeInfo.Path != "/streams" {
+		t.Errorf("Expected collapsed path /streams, got %q", routeInfo.Path)
+	}
+}
+
+// TestRouterAnalyzer_HandlerFuncConversionUnwrap verifies that the terminal
+// handler is recovered through an http.HandlerFunc(...) conversion inside a
+// require-wrapper, so response analysis targets the real handler rather than
+// the conversion or the wrapper.
+func TestRouterAnalyzer_HandlerFuncConversionUnwrap(t *testing.T) {
+	src := `
+package main
+
+import (
+	"net/http"
+	"github.com/gorilla/mux"
+)
+
+type server struct{}
+
+func (s *server) createStream(w http.ResponseWriter, r *http.Request) {}
+
+func requireRight(summarizer interface{}, right string, h http.Handler) http.Handler { return h }
+
+func setupRouter(s *server) {
+	router := mux.NewRouter()
+	var summarizer interface{}
+	router.Handle("/streams", requireRight(summarizer, "api:streams:create", http.HandlerFunc(s.createStream))).Methods("POST")
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("Failed to parse source: %v", err)
+	}
+
+	analyzer := NewRouterAnalyzer()
+	info := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue)}
+
+	var routeInfo *RouteInfo
+	ast.Inspect(file, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if ri := analyzer.AnalyzeRouterCall(call, file, info, fset); ri != nil {
+				routeInfo = ri
+				return false
+			}
+		}
+		return true
+	})
+
+	if routeInfo == nil {
+		t.Fatal("Expected to find route info, got nil")
+	}
+	if routeInfo.HandlerName != "createStream" {
+		t.Errorf("Expected handler createStream (unwrapped through http.HandlerFunc), got %q", routeInfo.HandlerName)
+	}
+	if len(routeInfo.Rights) != 1 || routeInfo.Rights[0] != "api:streams:create" {
+		t.Errorf("Expected right api:streams:create, got %v", routeInfo.Rights)
+	}
+}
+
+// TestRouterAnalyzer_PackageLocalChainWrapper verifies that a package-local
+// Chain(handler, middleware...) wrapper (called unqualified, so e.Fun is an
+// Ident) recurses into the terminal handler argument and still mines auth
+// scopes from the middleware arguments.
+func TestRouterAnalyzer_PackageLocalChainWrapper(t *testing.T) {
+	src := `
+package main
+
+import (
+	"net/http"
+	"github.com/gorilla/mux"
+	"example.com/webframework/web"
+)
+
+type server struct{}
+
+func (s *server) listWorkflows(w http.ResponseWriter, r *http.Request) {}
+
+func Chain(h http.Handler, adapters ...func(http.Handler) http.Handler) http.Handler { return h }
+
+func setupRouter(s *server) {
+	router := mux.NewRouter()
+	var summarizer interface{}
+	router.Handle("/jobs", Chain(http.HandlerFunc(s.listWorkflows), web.RequireRights(summarizer, "api:jobs:read"))).Methods("GET")
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("Failed to parse source: %v", err)
+	}
+
+	analyzer := NewRouterAnalyzer()
+	info := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue)}
+
+	var routeInfo *RouteInfo
+	ast.Inspect(file, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if ri := analyzer.AnalyzeRouterCall(call, file, info, fset); ri != nil {
+				routeInfo = ri
+				return false
+			}
+		}
+		return true
+	})
+
+	if routeInfo == nil {
+		t.Fatal("Expected to find route info, got nil")
+	}
+	if routeInfo.HandlerName != "listWorkflows" {
+		t.Errorf("Expected handler listWorkflows (unwrapped through Chain), got %q", routeInfo.HandlerName)
+	}
+	if len(routeInfo.Rights) != 1 || routeInfo.Rights[0] != "api:jobs:read" {
+		t.Errorf("Expected right api:jobs:read, got %v", routeInfo.Rights)
+	}
+}
+
+// TestRouterAnalyzer_FactoryHandlerPreserved verifies that a zero-argument
+// handler factory (no handler-typed argument) is still treated as the handler
+// identity rather than being mistaken for a wrapper.
+func TestRouterAnalyzer_FactoryHandlerPreserved(t *testing.T) {
+	src := `
+package main
+
+import (
+	"net/http"
+	"github.com/gorilla/mux"
+)
+
+type server struct{}
+
+func (s *server) listItems() http.HandlerFunc { return nil }
+
+func setupRouter(s *server) {
+	router := mux.NewRouter()
+	router.Handle("/items", s.listItems()).Methods("GET")
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("Failed to parse source: %v", err)
+	}
+
+	analyzer := NewRouterAnalyzer()
+	info := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue)}
+
+	var routeInfo *RouteInfo
+	ast.Inspect(file, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if ri := analyzer.AnalyzeRouterCall(call, file, info, fset); ri != nil {
+				routeInfo = ri
+				return false
+			}
+		}
+		return true
+	})
+
+	if routeInfo == nil {
+		t.Fatal("Expected to find route info, got nil")
+	}
+	if routeInfo.HandlerName != "listItems" {
+		t.Errorf("Expected factory handler listItems, got %q", routeInfo.HandlerName)
+	}
+}
+
 // TestRouterAnalyzer_UseMiddleware tests Use() middleware detection.
 func TestRouterAnalyzer_UseMiddleware(t *testing.T) {
 	src := `
@@ -537,7 +807,7 @@ func setupRouter() {
 	router := mux.NewRouter()
 	sub := router.PathPrefix("/v1").Subrouter()
 	var summarizer interface{}
-	sub.Use(web.RequireRights(summarizer, "api:v1:access"))
+	sub.Use(web.RequireRights(summarizer, "example:resource:read"))
 	var handler interface{}
 	sub.Handle("/users", handler).Methods("GET")
 }
@@ -593,13 +863,13 @@ func setupRouter() {
 
 	found := false
 	for _, right := range routeInfo.Rights {
-		if right == "api:v1:access" {
+		if right == "example:resource:read" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("Expected right 'api:v1:access' from Use(), got %v", routeInfo.Rights)
+		t.Errorf("Expected right 'example:resource:read' from Use(), got %v", routeInfo.Rights)
 	}
 }
 

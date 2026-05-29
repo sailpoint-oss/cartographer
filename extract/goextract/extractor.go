@@ -232,6 +232,15 @@ func (e *Extractor) loadPackages(cfg Config) error {
 		Fset:  e.fset,
 		Tests: cfg.IncludeTests,
 		Dir:   loadDir, // Set to module root for external packages
+		// Load the target service strictly in its own module context.
+		// Cartographer is frequently invoked by a host tool (the orchestration
+		// pipeline, an IDE, the dev inner loop) that itself runs under a Go
+		// workspace (go.work). That workspace must not leak into package
+		// loading for an unrelated external service module: go/packages would
+		// reject the service directory as "not one of the workspace modules"
+		// and return zero packages, silently dropping every route. Disabling
+		// workspace mode forces resolution via the service's own go.mod.
+		Env: append(os.Environ(), "GOWORK=off"),
 	}
 
 	if cfg.Verbose {
@@ -337,31 +346,41 @@ func (e *Extractor) analyzePackage(pkg *packages.Package) error {
 		e.errorSchemaAnalyzer.AnalyzeWebPackage(pkg.Syntax, pkg.TypesInfo)
 	}
 
-	// Analyze each file in the package
+	// PASS 1 (package-wide): collect handler/type declarations from EVERY file
+	// before any route is registered. Routes are frequently registered in a
+	// router/web_handlers file while their handler implementations live in a
+	// separate *_handlers file; per-file passing dropped that cross-file
+	// handler response/auth info, leaving routes with only platform error
+	// responses and no typed 2xx.
 	for i, file := range pkg.Syntax {
 		filename := pkg.CompiledGoFiles[i]
 		e.metadata.Files = append(e.metadata.Files, filename)
-
-		// Store type info for this file
 		e.typeInfo[file] = pkg.TypesInfo
+		e.collectDeclarations(file, filename, pkg)
+	}
 
-		if err := e.analyzeFile(file, filename, pkg); err != nil {
-			return fmt.Errorf("failed to analyze file %s: %w", filename, err)
-		}
+	// PASS 2 (package-wide): router setup context (subrouter prefixes, mounts,
+	// Use middleware) so registrations can resolve their effective path/auth.
+	for _, file := range pkg.Syntax {
+		e.collectRouterContext(file, pkg)
+	}
+
+	// PASS 3 (package-wide): route registrations, now that all handlers are
+	// cached and subrouter context is known.
+	for i, file := range pkg.Syntax {
+		filename := pkg.CompiledGoFiles[i]
+		e.registerRoutesInFile(file, filename, pkg)
 	}
 
 	return nil
 }
 
-// analyzeFile analyzes a single Go source file.
-// Uses two-pass processing to ensure handlers are analyzed before routes.
-func (e *Extractor) analyzeFile(file *ast.File, filename string, pkg *packages.Package) error {
-	// PASS 1: Collect all function declarations and type specs
-	// This ensures handler functions are in the cache before we process routes
+// collectDeclarations is PASS 1: it analyses every function declaration
+// (caching handler request/response/auth info by name) and type spec in a file.
+func (e *Extractor) collectDeclarations(file *ast.File, filename string, pkg *packages.Package) {
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
-			// Analyze function declarations (including handlers)
 			e.analyzeFuncDecl(node, file, filename, pkg)
 
 		case *ast.GenDecl:
@@ -376,30 +395,31 @@ func (e *Extractor) analyzeFile(file *ast.File, filename string, pkg *packages.P
 		}
 		return true
 	})
+}
 
-	// PASS 2: Analyze router setup (subrouters, middleware, chi nested routes)
-	// This must happen before route registrations so we have context
+// collectRouterContext is PASS 2: it records subrouter prefixes, mounts, and
+// Use-applied middleware so route registrations resolve their effective path
+// and inherited auth.
+func (e *Extractor) collectRouterContext(file *ast.File, pkg *packages.Package) {
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.AssignStmt:
-			// Look for PathPrefix assignments: sub := router.PathPrefix("/v1").Subrouter()
 			e.routerAnalyzer.AnalyzePathPrefix(node, pkg.TypesInfo)
 
 		case *ast.CallExpr:
-			// Look for Use() calls: sub.Use(middleware)
 			e.routerAnalyzer.AnalyzeUseCall(node, pkg.TypesInfo)
-
-			// Look for chi Route/Group calls: r.Route("/prefix", func(r chi.Router) {...})
 			e.routerAnalyzer.AnalyzeChiRoute(node, pkg.TypesInfo)
-
-			// Look for chi Mount calls: r.Mount("/api", apiRouter)
 			e.routerAnalyzer.AnalyzeChiMount(node, pkg.TypesInfo)
 		}
 		return true
 	})
+}
 
-	// PASS 3: Analyze route registrations
-	// Now that all handlers are cached and subrouter context is known
+// registerRoutesInFile is PASS 3: it registers route handlers, associating each
+// with the (now fully populated, package-wide) handler info cache. The mux
+// Path/Method/Handler form used by RestEndpoint.BuildRoutes implementations is
+// detected by the file-wide call inspection below.
+func (e *Extractor) registerRoutesInFile(file *ast.File, filename string, pkg *packages.Package) {
 	ast.Inspect(file, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
 			e.analyzeRouterCall(call, file, filename, pkg)
@@ -409,8 +429,6 @@ func (e *Extractor) analyzeFile(file *ast.File, filename string, pkg *packages.P
 		}
 		return true
 	})
-
-	return nil
 }
 
 // analyzeFuncDecl analyzes a function declaration.
@@ -431,18 +449,6 @@ func (e *Extractor) analyzeFuncDecl(funcDecl *ast.FuncDecl, file *ast.File, file
 
 	// Analyze the function body for handler patterns
 	handlerInfo := e.handlerAnalyzer.AnalyzeHandler(funcDecl, file, pkg.TypesInfo)
-
-	// RestEndpoint.BuildRoutes implementations register mux/chi routes inline.
-	if isBuildRoutesMethod(funcDecl) {
-		ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
-			if call, ok := n.(*ast.CallExpr); ok {
-				if routeInfo := e.routerAnalyzer.AnalyzeMuxPathMethodHandler(call, file, pkg.TypesInfo, e.fset); routeInfo != nil {
-					e.registerRoute(routeInfo, filename, call.Pos())
-				}
-			}
-			return true
-		})
-	}
 
 	// If this looks like a handler function, store the information
 	if handlerInfo != nil {
@@ -480,6 +486,16 @@ func (e *Extractor) registerRoute(routeInfo *RouteInfo, filename string, pos tok
 		File:         filename,
 		Line:         e.fset.Position(pos).Line,
 	}
+	if existing, exists := e.metadata.Operations[op.ID]; exists {
+		if existing.Path == op.Path && existing.Method == op.Method {
+			if e.config.Verbose {
+				fmt.Printf("  Skipping duplicate route: %s %s -> handler: %s\n",
+					op.Method, op.Path, op.HandlerFunc)
+			}
+			return
+		}
+		op.ID = e.uniqueRouteOperationID(op.ID, op.Method, op.Path)
+	}
 
 	if handlerInfo := e.getHandlerInfo(routeInfo.HandlerName); handlerInfo != nil {
 		e.mergeHandlerInfo(op, handlerInfo)
@@ -493,6 +509,50 @@ func (e *Extractor) registerRoute(routeInfo *RouteInfo, filename string, pos tok
 	if err := e.metadata.AddOperation(op); err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
+}
+
+func (e *Extractor) uniqueRouteOperationID(base, method, path string) string {
+	if base == "" {
+		base = strings.ToLower(method)
+	}
+	candidate := base
+	if method != "" || path != "" {
+		candidate = fmt.Sprintf("%s_%s_%s", base, strings.ToLower(method), routeIDPathSuffix(path))
+	}
+	if candidate == base {
+		candidate = base + "_route"
+	}
+	if _, exists := e.metadata.Operations[candidate]; !exists {
+		return candidate
+	}
+	for i := 2; ; i++ {
+		numbered := fmt.Sprintf("%s_%d", candidate, i)
+		if _, exists := e.metadata.Operations[numbered]; !exists {
+			return numbered
+		}
+	}
+}
+
+func routeIDPathSuffix(path string) string {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return "root"
+	}
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range path {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		default:
+			if !lastUnderscore {
+				b.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 // analyzeTypeSpec extracts type information from type specifications.
@@ -630,6 +690,34 @@ func (e *Extractor) mergeHandlerInfo(op *OperationInfo, cached *cachedHandlerInf
 		}
 		if len(info.SuccessResponses) > 0 {
 			op.SuccessResponses = append(op.SuccessResponses, info.SuccessResponses...)
+		}
+		if len(info.ResponseHeaders) > 0 {
+			if op.ResponseHeaders == nil {
+				op.ResponseHeaders = make(map[string]string)
+			}
+			for name, desc := range info.ResponseHeaders {
+				op.ResponseHeaders[name] = desc
+			}
+		}
+
+		// Merge auth tokens discovered via call-graph traversal from the
+		// handler body. Router-side middleware rights are already on
+		// op.Rights at this point; we union with the body-side tokens.
+		if len(info.AuthTokens) > 0 {
+			seen := make(map[string]struct{}, len(op.Rights)+len(info.AuthTokens))
+			for _, r := range op.Rights {
+				seen[r] = struct{}{}
+			}
+			for _, t := range info.AuthTokens {
+				if _, dup := seen[t]; dup {
+					continue
+				}
+				seen[t] = struct{}{}
+				op.Rights = append(op.Rights, t)
+			}
+			if len(op.Rights) > 0 {
+				op.RequiresAuth = true
+			}
 		}
 
 		// Merge detailed parameter information

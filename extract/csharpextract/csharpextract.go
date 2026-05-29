@@ -41,6 +41,7 @@ type Operation struct {
 	RequestBodyType string
 	ResponseType    string
 	ResponseStatus  int
+	ResponseHeaders map[string]string
 	Security        []string
 	File            string
 	Line            int
@@ -85,8 +86,9 @@ func Extract(cfg Config) (*Result, error) {
 			result.Schemas[name] = schema
 		}
 	}
+	methodReturnTypes := extractCSharpMethodReturnTypes(files)
 	for _, f := range files {
-		result.Operations = append(result.Operations, extractMinimalAPIOperations(f)...)
+		result.Operations = append(result.Operations, extractMinimalAPIOperations(f, methodReturnTypes)...)
 		result.Operations = append(result.Operations, extractControllerOperations(f)...)
 	}
 	sort.SliceStable(result.Operations, func(i, j int) bool {
@@ -134,12 +136,17 @@ func readCSharpFiles(pool *parser.Pool, dirs []string) ([]sourceFile, error) {
 	return out, nil
 }
 
-func extractMinimalAPIOperations(f sourceFile) []*Operation {
+func extractMinimalAPIOperations(f sourceFile, methodReturnTypes map[string]string) []*Operation {
 	groupPrefixes := map[string]string{"app": ""}
+	groupSecurity := map[string][]string{"app": nil}
+	constants := extractStringConstants(f.text)
 	groupRe := regexp.MustCompile(`(?m)(?:var\s+)?(\w+)\s*=\s*(\w+)\.MapGroup\(\s*"([^"]*)"\s*\)`)
-	for _, m := range groupRe.FindAllStringSubmatch(f.text, -1) {
+	for _, loc := range groupRe.FindAllStringSubmatchIndex(f.text, -1) {
+		m := groupRe.FindStringSubmatch(f.text[loc[0]:loc[1]])
 		parent := groupPrefixes[m[2]]
 		groupPrefixes[m[1]] = joinPaths(parent, m[3])
+		chain := endpointChain(f.text, loc[0])
+		groupSecurity[m[1]] = append(append([]string{}, groupSecurity[m[2]]...), authorizeMetadata(chain, constants)...)
 	}
 	endpointRe := regexp.MustCompile(`(?s)(\w+)\.Map(Get|Post|Put|Delete|Patch)\(\s*"([^"]*)"\s*,\s*(?:async\s*)?\(([^)]*)\)\s*=>`)
 	var ops []*Operation
@@ -149,6 +156,11 @@ func extractMinimalAPIOperations(f sourceFile) []*Operation {
 		prefix := groupPrefixes[receiver]
 		path := normalizeRoute(joinPaths(prefix, route))
 		line, col := lineCol(f.text, loc[0])
+		chain := endpointChain(f.text, loc[0])
+		if strings.Contains(chain, ".ExcludeFromDescription(") {
+			continue
+		}
+		bodySegment := f.text[loc[1]:min(len(f.text), loc[1]+600)]
 		op := &Operation{
 			Path:        path,
 			Method:      method,
@@ -160,15 +172,112 @@ func extractMinimalAPIOperations(f sourceFile) []*Operation {
 			Column:      col,
 		}
 		op.Parameters, op.RequestBodyType = parseMinimalParams(params, path, f.path, line)
-		op.ResponseType = inferMinimalResponseType(f.text[loc[1]:min(len(f.text), loc[1]+600)])
-		op.ResponseStatus = defaultStatus(method, op.ResponseType)
-		op.Security = chainedMetadata(f.text[loc[1]:min(len(f.text), loc[1]+500)])
+		op.ResponseType = responseTypeFromProduces(chain)
+		if op.ResponseType == "" {
+			op.ResponseType = inferMinimalResponseType(bodySegment, methodReturnTypes)
+		}
+		op.ResponseStatus = minimalResponseStatus(chain+"\n"+bodySegment, method, op.ResponseType)
+		op.ResponseHeaders = extractCSharpResponseHeaders(chain + "\n" + bodySegment)
+		if name := endpointName(chain); name != "" {
+			op.OperationID = name
+		}
+		op.Security = append(append([]string{}, groupSecurity[receiver]...), chainedMetadata(chain, constants)...)
+		ops = append(ops, op)
+	}
+
+	methodGroupRe := regexp.MustCompile(`(?s)(\w+)\.Map(Get|Post|Put|Delete|Patch)\(\s*"([^"]*)"\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
+	for _, loc := range methodGroupRe.FindAllStringSubmatchIndex(f.text, -1) {
+		m := methodGroupRe.FindStringSubmatch(f.text[loc[0]:loc[1]])
+		receiver, method, route, handlerName := m[1], strings.ToUpper(m[2]), m[3], m[4]
+		prefix := groupPrefixes[receiver]
+		path := normalizeRoute(joinPaths(prefix, route))
+		line, col := lineCol(f.text, loc[0])
+		chain := endpointChain(f.text, loc[0])
+		if strings.Contains(chain, ".ExcludeFromDescription(") {
+			continue
+		}
+		returnType, params, _ := minimalHandlerSignature(f.text, handlerName)
+		handlerBody := minimalHandlerBody(f.text, handlerName)
+		op := &Operation{
+			Path:        path,
+			Method:      method,
+			OperationID: handlerName,
+			Summary:     summaryBefore(f.text, loc[0]),
+			Tags:        []string{tagFromPath(path)},
+			File:        f.path,
+			Line:        line,
+			Column:      col,
+		}
+		op.Parameters, op.RequestBodyType = parseMinimalParams(params, path, f.path, line)
+		op.ResponseType = responseTypeFromProduces(chain)
+		if op.ResponseType == "" {
+			op.ResponseType = unwrapResponseType(returnType)
+		}
+		op.ResponseStatus = minimalResponseStatus(chain, method, op.ResponseType)
+		op.ResponseHeaders = extractCSharpResponseHeaders(chain + "\n" + handlerBody)
+		if name := endpointName(chain); name != "" {
+			op.OperationID = name
+		}
+		op.Security = append(append([]string{}, groupSecurity[receiver]...), chainedMetadata(chain, constants)...)
 		ops = append(ops, op)
 	}
 	return ops
 }
 
+var (
+	reCSharpHeaderIndex  = regexp.MustCompile(`(?m)(?:Response|response|httpContext\.Response|context\.Response)\.Headers\[\s*"([^"]+)"\s*\]`)
+	reCSharpHeaderAppend = regexp.MustCompile(`(?m)(?:Response|response|httpContext\.Response|context\.Response)\.Headers\.(?:Append|Add)\(\s*"([^"]+)"`)
+)
+
+func extractCSharpResponseHeaders(text string) map[string]string {
+	headers := map[string]string{}
+	for _, m := range reCSharpHeaderIndex.FindAllStringSubmatch(text, -1) {
+		addCSharpResponseHeader(headers, m[1])
+	}
+	for _, m := range reCSharpHeaderAppend.FindAllStringSubmatch(text, -1) {
+		addCSharpResponseHeader(headers, m[1])
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
+func addCSharpResponseHeader(headers map[string]string, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.EqualFold(name, "Content-Type") {
+		return
+	}
+	headers[name] = name
+}
+
+func extractCSharpMethodReturnTypes(files []sourceFile) map[string]string {
+	out := map[string]string{}
+	re := regexp.MustCompile(`(?s)(?:public|private|internal|protected)?\s*(?:static\s+)?(?:async\s+)?([A-Za-z0-9_<>,\.\?\[\]\s]+?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	for _, f := range files {
+		for _, m := range re.FindAllStringSubmatch(f.text, -1) {
+			returnType := cleanType(m[1])
+			name := strings.TrimSpace(m[2])
+			if returnType == "" || name == "" || isCSharpKeyword(returnType) {
+				continue
+			}
+			out[name] = unwrapResponseType(returnType)
+		}
+	}
+	return out
+}
+
+func isCSharpKeyword(s string) bool {
+	switch strings.TrimSpace(s) {
+	case "if", "for", "foreach", "while", "switch", "catch", "using", "return", "new":
+		return true
+	default:
+		return false
+	}
+}
+
 func extractControllerOperations(f sourceFile) []*Operation {
+	constants := extractStringConstants(f.text)
 	classRe := regexp.MustCompile(`(?s)((?:\s*\[[^\]]+\]\s*)*)public\s+(?:partial\s+)?class\s+(\w+)[^{]*\{`)
 	matches := classRe.FindAllStringSubmatchIndex(f.text, -1)
 	var ops []*Operation
@@ -206,7 +315,7 @@ func extractControllerOperations(f sourceFile) []*Operation {
 				Tags:           []string{tagFromController(className)},
 				ResponseType:   unwrapResponseType(returnType),
 				ResponseStatus: responseStatus(methodAttrs, httpMethod, returnType),
-				Security:       authorizeMetadata(methodAttrs + "\n" + attrs),
+				Security:       authorizeMetadata(methodAttrs+"\n"+attrs, constants),
 				File:           f.path,
 				Line:           line,
 				Column:         col,
@@ -317,6 +426,9 @@ func parseParams(params, path, file string, line int, attributes bool) ([]*Param
 		}
 		typ, name := cleanType(fields[len(fields)-2]), strings.Trim(fields[len(fields)-1], ",")
 		name = strings.TrimPrefix(name, "@")
+		if isFrameworkInjectedParam(typ, name) {
+			continue
+		}
 		in := "query"
 		required := false
 		if pathParams[name] {
@@ -342,6 +454,21 @@ func parseParams(params, path, file string, line int, attributes bool) ([]*Param
 		}
 	}
 	return out, body
+}
+
+func isFrameworkInjectedParam(typ, name string) bool {
+	clean := strings.TrimSuffix(strings.ToLower(cleanType(typ)), "?")
+	switch clean {
+	case "cancellationtoken", "httpcontext", "httprequest", "httpresponse", "claimsprincipal", "endpointfilterinvocationcontext":
+		return true
+	}
+	if strings.HasPrefix(clean, "ilogger<") || strings.HasPrefix(clean, "ioptions<") || strings.HasPrefix(clean, "imediator") {
+		return true
+	}
+	if strings.EqualFold(name, "ct") || strings.EqualFold(name, "cancellationToken") {
+		return clean == "cancellationtoken"
+	}
+	return false
 }
 
 func splitParams(params string) []string {
@@ -417,35 +544,265 @@ func defaultStatus(method, responseType string) int {
 	return 200
 }
 
-func inferMinimalResponseType(body string) string {
-	for _, pattern := range []string{`TypedResults\.Ok\((?:await\s+)?[^\)]*<([A-Za-z0-9_]+)>`, `Results\.Ok\((?:await\s+)?([A-Za-z0-9_]+)`, `TypedResults\.Created\([^,]+,\s*([A-Za-z0-9_]+)`} {
+func inferMinimalResponseType(body string, methodReturnTypes map[string]string) string {
+	for _, pattern := range []string{
+		`TypedResults\.(?:Ok|Created|Accepted)\s*<\s*([A-Za-z0-9_<>,\.\?\[\]]+)\s*>`,
+		`(?:TypedResults|Results)\.(?:Ok|Created|Accepted)\(\s*(?:[^,]+,\s*)?new\s+([A-Za-z0-9_<>,\.\?\[\]]+)\s*\(`,
+		`return\s+new\s+([A-Za-z0-9_<>,\.\?\[\]]+)\s*\(`,
+	} {
 		if m := regexp.MustCompile(pattern).FindStringSubmatch(body); len(m) == 2 {
 			return cleanType(m[1])
+		}
+	}
+	if m := regexp.MustCompile(`(?:TypedResults|Results)\.(?:Ok|Created|Accepted)\(\s*([A-Za-z_][A-Za-z0-9_]*)`).FindStringSubmatch(body); len(m) == 2 {
+		name := regexp.QuoteMeta(m[1])
+		patterns := []string{
+			`var\s+` + name + `\s*=\s*new\s+([A-Za-z0-9_<>,\.\?\[\]]+)\s*\(`,
+			`([A-Za-z0-9_<>,\.\?\[\]]+)\s+` + name + `\s*=`,
+		}
+		for _, pattern := range patterns {
+			if typed := regexp.MustCompile(pattern).FindStringSubmatch(body); len(typed) == 2 {
+				if typed[1] == "var" {
+					continue
+				}
+				return cleanType(typed[1])
+			}
+		}
+	}
+	if strings.Contains(body, "NoContent(") {
+		return "void"
+	}
+	for _, pattern := range []string{
+		`return\s+await\s+[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z_][A-Za-z0-9_]*)\s*\(`,
+		`return\s+[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z_][A-Za-z0-9_]*)\s*\(`,
+	} {
+		if m := regexp.MustCompile(pattern).FindStringSubmatch(body); len(m) == 2 {
+			if typ := methodReturnTypes[m[1]]; typ != "" {
+				return typ
+			}
 		}
 	}
 	return "Object"
 }
 
-func chainedMetadata(chain string) []string {
-	return authorizeMetadata(chain)
+// endpointChain returns the full Minimal API registration statement starting at
+// start, up to and including the terminating ';'. It tracks (), {}, [] nesting
+// and string/char literals so that ';' characters inside a multiline inline
+// lambda body do NOT prematurely truncate the chain. Truncating early dropped
+// every fluent call chained AFTER the lambda — .RequireAuthorization(...),
+// .ExcludeFromDescription(), .WithName(...), .Produces<T>() — causing missing
+// security, leaked internal routes, and missing typed responses.
+func endpointChain(text string, start int) string {
+	if start < 0 || start >= len(text) {
+		return ""
+	}
+	depth := 0
+	var stringDelim byte // 0 when not inside a string/char literal
+	const maxScan = 20000
+	for i := start; i < len(text); i++ {
+		if i-start > maxScan {
+			return text[start:i]
+		}
+		c := text[i]
+		if stringDelim != 0 {
+			switch c {
+			case '\\':
+				i++ // skip escaped char
+			case stringDelim:
+				stringDelim = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			stringDelim = c
+		case '(', '{', '[':
+			depth++
+		case ')', '}', ']':
+			depth--
+		case ';':
+			if depth <= 0 {
+				return text[start : i+1]
+			}
+		}
+	}
+	return text[start:]
 }
 
-func authorizeMetadata(text string) []string {
+func endpointName(chain string) string {
+	if m := regexp.MustCompile(`\.WithName\(\s*"([^"]+)"\s*\)`).FindStringSubmatch(chain); len(m) == 2 {
+		return m[1]
+	}
+	return ""
+}
+
+func responseTypeFromProduces(chain string) string {
+	patterns := []string{
+		`\.Produces<\s*([A-Za-z0-9_<>,\.\?\[\]]+)\s*>`,
+		`\.Produces(?:ResponseType)?\(\s*typeof\(\s*([A-Za-z0-9_<>,\.\?\[\]]+)\s*\)`,
+	}
+	for _, pattern := range patterns {
+		if m := regexp.MustCompile(pattern).FindStringSubmatch(chain); len(m) == 2 {
+			return cleanType(m[1])
+		}
+	}
+	return ""
+}
+
+func minimalResponseStatus(chain, method, responseType string) int {
+	if status := statusFromText(chain); status != 0 {
+		return status
+	}
+	return defaultStatus(method, responseType)
+}
+
+func statusFromText(text string) int {
+	switch {
+	case strings.Contains(text, "NoContent("):
+		return 204
+	case strings.Contains(text, "Created("), strings.Contains(text, "CreatedAtRoute("):
+		return 201
+	case strings.Contains(text, "Accepted("):
+		return 202
+	case strings.Contains(text, "Ok("):
+		return 200
+	}
+	if m := regexp.MustCompile(`StatusCodes\.Status(\d{3})`).FindStringSubmatch(text); len(m) == 2 {
+		if code, err := strconv.Atoi(m[1]); err == nil {
+			return code
+		}
+	}
+	if m := regexp.MustCompile(`,\s*(\d{3})\s*\)`).FindStringSubmatch(text); len(m) == 2 {
+		if code, err := strconv.Atoi(m[1]); err == nil {
+			return code
+		}
+	}
+	return 0
+}
+
+func minimalHandlerSignature(text, name string) (string, string, bool) {
+	pattern := `(?s)(?:public|private|internal|protected)?\s*(?:static\s+)?(?:async\s+)?([A-Za-z0-9_<>,\.\?\[\]\s]+?)\s+` + regexp.QuoteMeta(name) + `\s*\(([^)]*)\)`
+	if m := regexp.MustCompile(pattern).FindStringSubmatch(text); len(m) == 3 {
+		return strings.TrimSpace(m[1]), m[2], true
+	}
+	return "", "", false
+}
+
+func minimalHandlerBody(text, name string) string {
+	pattern := `(?s)(?:public|private|internal|protected)?\s*(?:static\s+)?(?:async\s+)?[A-Za-z0-9_<>,\.\?\[\]\s]+?\s+` + regexp.QuoteMeta(name) + `\s*\([^)]*\)\s*\{`
+	loc := regexp.MustCompile(pattern).FindStringIndex(text)
+	if loc == nil {
+		return ""
+	}
+	start := loc[1]
+	depth := 1
+	for i := start; i < len(text); i++ {
+		switch text[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[start:i]
+			}
+		}
+	}
+	return text[start:]
+}
+
+func chainedMetadata(chain string, constants map[string]string) []string {
+	return authorizeMetadata(chain, constants)
+}
+
+func authorizeMetadata(text string, constants map[string]string) []string {
 	var scopes []string
-	re := regexp.MustCompile(`RequireAuthorization\(\s*"([^"]+)"\s*\)|Authorize\([^)]*Policy\s*=\s*"([^"]+)"`)
-	for _, m := range re.FindAllStringSubmatch(text, -1) {
-		for _, value := range m[1:] {
-			if value != "" {
-				scopes = append(scopes, value)
+
+	// Match the common ASP.NET Core auth patterns:
+	//   .RequireAuthorization("policy")
+	//   .RequireAuthorization("policyA", "policyB")
+	//   [Authorize(Policy = "name")]
+	//   [Authorize(Roles = "admin,ops")]
+	//   [Authorize("policyName")]      // positional policy form
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`RequireAuthorization\(([^)]*)\)`),
+		regexp.MustCompile(`Authorize\(\s*Policy\s*=\s*"([^"]+)"`),
+		regexp.MustCompile(`Authorize\(\s*Roles\s*=\s*"([^"]+)"`),
+		regexp.MustCompile(`Authorize\(\s*"([^"]+)"`),
+	}
+	for _, re := range patterns {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			for _, value := range m[1:] {
+				if value == "" {
+					continue
+				}
+				// Roles attribute may carry comma-delimited values
+				// inside the single quoted string; split here.
+				for _, part := range strings.Split(value, ",") {
+					part = strings.TrimSpace(part)
+					part = strings.Trim(part, `"`)
+					if resolved := resolveCSharpStringConstant(part, constants); resolved != "" {
+						part = resolved
+					}
+					if part != "" {
+						scopes = append(scopes, part)
+					}
+				}
 			}
 		}
 	}
 	return scopes
 }
 
+func extractStringConstants(text string) map[string]string {
+	out := map[string]string{}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`const\s+string\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]+)"`),
+		regexp.MustCompile(`static\s+readonly\s+string\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]+)"`),
+		regexp.MustCompile(`public\s+const\s+string\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]+)"`),
+	}
+	for _, re := range patterns {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			out[m[1]] = m[2]
+		}
+	}
+	return out
+}
+
+func resolveCSharpStringConstant(expr string, constants map[string]string) string {
+	expr = strings.TrimSpace(expr)
+	expr = strings.Trim(expr, `"`)
+	if expr == "" {
+		return ""
+	}
+	if v, ok := constants[expr]; ok {
+		return v
+	}
+	if idx := strings.LastIndex(expr, "."); idx >= 0 {
+		if v, ok := constants[expr[idx+1:]]; ok {
+			return v
+		}
+	}
+	return ""
+}
+
 func unwrapResponseType(t string) string {
 	t = cleanType(t)
 	for _, prefix := range []string{"ActionResult<", "IActionResult<", "Task<", "ValueTask<"} {
+		if strings.HasPrefix(t, prefix) && strings.HasSuffix(t, ">") {
+			return unwrapResponseType(strings.TrimSuffix(strings.TrimPrefix(t, prefix), ">"))
+		}
+	}
+	if strings.HasPrefix(t, "Results<") && strings.HasSuffix(t, ">") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(t, "Results<"), ">")
+		for _, part := range splitParams(inner) {
+			part = cleanType(part)
+			if part == "NoContent" || part == "NotFound" || part == "BadRequest" {
+				continue
+			}
+			return unwrapResponseType(part)
+		}
+	}
+	for _, prefix := range []string{"Ok<", "Created<", "CreatedAtRoute<", "Accepted<"} {
 		if strings.HasPrefix(t, prefix) && strings.HasSuffix(t, ">") {
 			return unwrapResponseType(strings.TrimSuffix(strings.TrimPrefix(t, prefix), ">"))
 		}
@@ -486,8 +843,6 @@ func isSimpleType(t string) bool {
 
 func cleanType(t string) string {
 	t = strings.TrimSpace(t)
-	t = strings.TrimPrefix(t, "Task<")
-	t = strings.TrimSuffix(t, ">")
 	t = strings.TrimPrefix(t, "System.")
 	return strings.TrimSpace(t)
 }

@@ -1,0 +1,12 @@
+# Managed skip-globs file. Regenerated on every leak-guard refresh.
+# For per-repo additions that should survive regen, see skip-globs.local.txt.
+#
+# Glob entries are matched against:
+# 1. The repo-relative path (forward slashes)
+# 2. The bare basename
+# 3. The "<prefix>/**" form (directory prefix match)
+#
+# Defaults: generated test goldens that re-emit input verbatim and would
+# otherwise re-trigger the very leaks we are scrubbing in source.
+
+**/testdata/golden/**

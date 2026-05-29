@@ -2,39 +2,39 @@ package authscope
 
 import (
 	"regexp"
-	"sort"
 	"strings"
 )
 
-// amsToken matches Barrelman sailpoint-oauth-scope-format (three colon-separated segments).
-var amsToken = regexp.MustCompile(`^[a-z][a-z0-9-]*:[a-z0-9][a-z0-9-]*:[a-z0-9-]+$`)
+// colonDelimitedAuthID matches three-segment scope-style ids of the form
+// `api:resource:action`.
+var colonDelimitedAuthID = regexp.MustCompile(`^[a-z][a-z0-9-]*:[a-z0-9][a-z0-9-]*:[a-z0-9-]+$`)
 
-// PartitionTokens splits security-related strings into AMS rights vs PAT scope ids.
-// When mapping is nil, three-segment tokens are treated as rights and shorter tokens as scopes.
-func PartitionTokens(tokens []string, m *Mapping) (rights, oauthScopes []string) {
-	if m != nil {
-		return m.Classify(tokens)
+// IsColonDelimitedAuthID reports whether s looks like a structured
+// three-segment colon-delimited security identifier (e.g.
+// `api:resource:action`). Cartographer treats every extracted token the
+// same way regardless of its shape, but per-language adapters use this to
+// recognise structured ids in framework metadata.
+func IsColonDelimitedAuthID(s string) bool {
+	return colonDelimitedAuthID.MatchString(strings.TrimSpace(s))
+}
+
+// SplitTokens splits a single security-annotation string into one or more
+// atomic tokens. Many frameworks accept comma- or whitespace-delimited
+// scopes inside one annotation argument; this helper normalises those into
+// individual entries before they enter the security block.
+func SplitTokens(s string) []string {
+	if s == "" {
+		return nil
 	}
-	seenR := make(map[string]bool)
-	seenS := make(map[string]bool)
-	for _, t := range tokens {
-		t = strings.TrimSpace(t)
-		if t == "" || t == "oauth2" || t == "bearerAuth" || t == "bearer" {
-			continue
-		}
-		if amsToken.MatchString(t) {
-			if !seenR[t] {
-				seenR[t] = true
-				rights = append(rights, t)
-			}
-		} else {
-			if !seenS[t] {
-				seenS[t] = true
-				oauthScopes = append(oauthScopes, t)
-			}
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			out = append(out, f)
 		}
 	}
-	sort.Strings(rights)
-	sort.Strings(oauthScopes)
-	return rights, oauthScopes
+	return out
 }

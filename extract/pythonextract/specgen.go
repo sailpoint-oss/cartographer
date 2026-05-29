@@ -3,7 +3,6 @@ package pythonextract
 import (
 	"strings"
 
-	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/index"
 	"github.com/sailpoint-oss/cartographer/extract/sharedspec"
 	"github.com/sailpoint-oss/cartographer/extract/specmodel"
@@ -19,7 +18,6 @@ type SpecConfig struct {
 	ServiceTemplate string
 	TreeShake       bool
 	ErrorSchema     string
-	AuthScope       authscope.ApplyOptions
 }
 
 // GenerateSpec converts Python extraction results into a complete OpenAPI spec.
@@ -46,7 +44,6 @@ func GenerateSpec(result *Result, cfg SpecConfig) map[string]any {
 		ServiceTemplate: cfg.ServiceTemplate,
 		TreeShake:       cfg.TreeShake,
 		ErrorSchema:     cfg.ErrorSchema,
-		AuthScope:       cfg.AuthScope,
 	}, adapter)
 
 	// Surface the detected framework so downstream analysis can behave
@@ -175,8 +172,8 @@ func (a *pythonAdapter) FormParamSchema(typeName string) map[string]any {
 	return a.ParamTypeToSchema(typeName)
 }
 
-// titleCaseServiceName converts "aperture-core" or "aperture_core" into
-// "Aperture Core" for the OpenAPI info.title fallback.
+// titleCaseServiceName converts "example-service" or "example_service" into
+// "Example Service" for the OpenAPI info.title fallback.
 func titleCaseServiceName(s string) string {
 	s = strings.ReplaceAll(s, "_", "-")
 	parts := strings.Split(s, "-")

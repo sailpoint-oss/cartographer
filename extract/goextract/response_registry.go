@@ -38,34 +38,19 @@ func NewResponseRegistry() *ResponseRegistry {
 	return registry
 }
 
-// registerWebErrorType registers the web.Error response type.
+// registerWebErrorType registers a neutral placeholder for the framework's
+// error response type. The literal field shape was previously hard-coded
+// here from a vendor envelope; that vocabulary now lives in a downstream
+// consumer overlay. Cartographer emits a stub-marked schema and lets the
+// consumer resolve it during post-extract processing.
 func (rr *ResponseRegistry) registerWebErrorType() {
-	// web.Error structure
 	webError := &ResponseSchema{
 		TypeName:    "Error",
 		Package:     FrameworkWebPackagePath,
 		ContentType: "application/json",
-		Description: "Standard API error response",
-		Fields: []FieldInfo{
-			{
-				Name:        "detailCode",
-				Type:        "string",
-				JSONName:    "detailCode",
-				Description: "Error detail code",
-			},
-			{
-				Name:        "trackingId",
-				Type:        "string",
-				JSONName:    "trackingId",
-				Description: "Request tracking ID for debugging",
-			},
-			{
-				Name:        "messages",
-				Type:        "[]ErrorMessage",
-				JSONName:    "messages",
-				Description: "Localized error messages",
-			},
-		},
+		Description: "Error response (resolved by consumer overlay if a catalog is configured)",
+		// No Fields: callers serialise this as a stub-marked placeholder
+		// in extract/sharedspec.GenerateStubSchema("LegacyErrorResponse").
 	}
 
 	rr.schemas[FrameworkWebPackagePath+".Error"] = webError

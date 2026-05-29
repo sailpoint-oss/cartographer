@@ -59,18 +59,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                properties:
-                                    email:
-                                        type: string
-                                    id:
-                                        type: string
-                                    name:
-                                        type: string
-                                required:
-                                    - id
-                                    - name
-                                    - email
-                                type: object
+                                $ref: '#/components/schemas/UserDto'
                     description: User created
             summary: Create User
             tags:
@@ -81,7 +70,7 @@ paths:
             operationId: findOne
             parameters:
                 - description: The unique identifier of the resource.
-                  example: 2c91808a7813090a017814121919ecca
+                  example: 550e8400-e29b-41d4-a716-446655440000
                   in: path
                   name: id
                   required: true
@@ -93,18 +82,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                properties:
-                                    email:
-                                        type: string
-                                    id:
-                                        type: string
-                                    name:
-                                        type: string
-                                required:
-                                    - id
-                                    - name
-                                    - email
-                                type: object
+                                $ref: '#/components/schemas/UserDto'
                     description: User
             summary: Get User
             tags:

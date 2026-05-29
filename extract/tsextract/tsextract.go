@@ -48,6 +48,7 @@ type Operation struct {
 	Description            string
 	Tags                   []string
 	Parameters             []*Parameter
+	FormParams             []*Parameter
 	RequestBodyType        string
 	RequestBodyDescription string // from @ApiBody({ description })
 	ResponseType           string
@@ -130,6 +131,7 @@ func Extract(cfg Config) (*Result, error) {
 	for _, decl := range idx.All() {
 		result.Schemas[decl.Name] = idx.ToOpenAPISchema(decl, nil)
 	}
+	normalizeInlineTSResponseSchemas(result)
 
 	return result, nil
 }
@@ -137,13 +139,45 @@ func Extract(cfg Config) (*Result, error) {
 // extractOperations walks TypeScript source files looking for NestJS controller classes.
 func extractOperations(pool *parser.Pool, idx *index.Index, rootDir string, verbose bool) ([]*Operation, error) {
 	var ops []*Operation
+	files, err := loadTSSourceFiles(rootDir)
+	if err != nil {
+		return nil, err
+	}
+	methodReturnTypes := collectTSMethodReturnTypes(files)
 
-	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+	for _, file := range files {
+		tree, err := pool.Parse("typescript", file.Source)
+		if err != nil {
+			continue
+		}
+
+		func() {
+			defer tree.Close()
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "WARN: panic extracting operations from %s: %v\n", file.Path, r)
+				}
+			}()
+			fileOps := extractFileOperations(tree.RootNode(), file.Source, file.Path, idx, methodReturnTypes)
+			ops = append(ops, fileOps...)
+		}()
+	}
+	return ops, nil
+}
+
+type tsSourceFile struct {
+	Path   string
+	Source []byte
+}
+
+func loadTSSourceFiles(rootDir string) ([]tsSourceFile, error) {
+	var files []tsSourceFile
+	err := filepath.WalkDir(rootDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() {
-			base := info.Name()
+		if entry.IsDir() {
+			base := entry.Name()
 			if base == "node_modules" || base == ".git" || base == "dist" || base == "build" || base == "__tests__" {
 				return filepath.SkipDir
 			}
@@ -152,43 +186,48 @@ func extractOperations(pool *parser.Pool, idx *index.Index, rootDir string, verb
 		if !strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".spec.ts") || strings.HasSuffix(path, ".test.ts") || strings.HasSuffix(path, ".d.ts") {
 			return nil
 		}
-
-		source, err := os.ReadFile(path)
-		if err != nil {
+		source, readErr := os.ReadFile(path)
+		if readErr != nil {
 			return nil
 		}
-
-		tree, err := pool.Parse("typescript", source)
-		if err != nil {
-			return nil
-		}
-		defer tree.Close()
-
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Fprintf(os.Stderr, "WARN: panic extracting operations from %s: %v\n", path, r)
-				}
-			}()
-			fileOps := extractFileOperations(tree.RootNode(), source, path, idx)
-			ops = append(ops, fileOps...)
-		}()
-
+		files = append(files, tsSourceFile{Path: path, Source: source})
 		return nil
 	})
+	return files, err
+}
 
-	return ops, err
+func collectTSMethodReturnTypes(files []tsSourceFile) map[string]string {
+	out := map[string]string{}
+	for _, file := range files {
+		for name, typ := range extractTSMethodReturnTypes(string(file.Source)) {
+			out[name] = typ
+		}
+	}
+	return out
+}
+
+func extractTSMethodReturnTypes(source string) map[string]string {
+	out := map[string]string{}
+	re := regexp.MustCompile(`(?s)(?:public|private|protected)?\s*(?:async\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*:\s*([^{};]+?)\s*(?:\{|;)`)
+	for _, m := range re.FindAllStringSubmatch(source, -1) {
+		name := strings.TrimSpace(m[1])
+		typ := strings.TrimSpace(m[2])
+		if name != "" && typ != "" {
+			out[name] = typ
+		}
+	}
+	return out
 }
 
 // extractFileOperations extracts operations from a single TypeScript source file.
-func extractFileOperations(root *tree_sitter.Node, source []byte, filePath string, idx *index.Index) []*Operation {
+func extractFileOperations(root *tree_sitter.Node, source []byte, filePath string, idx *index.Index, methodReturnTypes map[string]string) []*Operation {
 	var ops []*Operation
 
 	for i := uint(0); i < root.ChildCount(); i++ {
 		child := root.Child(i)
 		switch child.Kind() {
 		case "class_declaration":
-			classOps := extractClassOperations(child, nil, source, filePath, idx)
+			classOps := extractClassOperations(child, nil, source, filePath, idx, methodReturnTypes)
 			ops = append(ops, classOps...)
 		case "export_statement":
 			// In TypeScript, @Controller decorator is on the export_statement,
@@ -206,7 +245,7 @@ func extractFileOperations(root *tree_sitter.Node, source []byte, filePath strin
 				}
 			}
 			if classDecl != nil {
-				classOps := extractClassOperations(classDecl, exportDecorators, source, filePath, idx)
+				classOps := extractClassOperations(classDecl, exportDecorators, source, filePath, idx, methodReturnTypes)
 				ops = append(ops, classOps...)
 			}
 		}
@@ -217,7 +256,7 @@ func extractFileOperations(root *tree_sitter.Node, source []byte, filePath strin
 
 // extractClassOperations extracts operations from a class declaration.
 // exportDecorators are decorators found on the wrapping export_statement (e.g. @Controller).
-func extractClassOperations(classNode *tree_sitter.Node, exportDecorators []*tree_sitter.Node, source []byte, filePath string, idx *index.Index) []*Operation {
+func extractClassOperations(classNode *tree_sitter.Node, exportDecorators []*tree_sitter.Node, source []byte, filePath string, idx *index.Index, methodReturnTypes map[string]string) []*Operation {
 	isController, basePath, classTags, classSec := analyzeClassDecorators(classNode, exportDecorators, source)
 	if !isController {
 		return nil
@@ -245,9 +284,9 @@ func extractClassOperations(classNode *tree_sitter.Node, exportDecorators []*tre
 		case "decorator":
 			pendingDecorators = append(pendingDecorators, child)
 		case "method_definition":
-			op := extractMethodOperationWithDecorators(child, pendingDecorators, source, basePath, classTags, classSec, idx, filePath)
-			if op != nil {
-				ops = append(ops, op)
+			methodOps := extractMethodOperationWithDecorators(child, pendingDecorators, source, basePath, classTags, classSec, idx, filePath, methodReturnTypes)
+			if len(methodOps) > 0 {
+				ops = append(ops, methodOps...)
 			}
 			pendingDecorators = nil
 		default:
@@ -295,6 +334,19 @@ func analyzeClassDecorators(classNode *tree_sitter.Node, exportDecorators []*tre
 			classSecurity.RequiresAuth = true
 			scopes := parseApiOAuth2Decorator(args)
 			classSecurity.Security = append(classSecurity.Security, scopes...)
+		case "Roles", "Scopes", "RequireRight":
+			// NestJS RBAC convention: @Roles('admin', 'ops') /
+			// @Scopes('read:users'). Every string-literal argument becomes
+			// a security requirement (OAuth2 scope).
+			classSecurity.RequiresAuth = true
+			classSecurity.Security = append(classSecurity.Security, scopeArgs(args)...)
+		case "RequireGroup":
+			// Group/role membership is an authorization signal but not an
+			// OAuth2 scope. Mark auth required, but do not emit group names
+			// (often enum references such as SecurityGroups.ORG_ADMIN) as
+			// scope tokens: they are not part of the token grant and fail
+			// scope-format checks downstream.
+			classSecurity.RequiresAuth = true
 		}
 	}
 
@@ -326,9 +378,9 @@ func analyzeClassDecorators(classNode *tree_sitter.Node, exportDecorators []*tre
 
 // extractMethodOperationWithDecorators extracts an operation from a method_definition node,
 // using the pre-collected sibling decorators from class_body.
-func extractMethodOperationWithDecorators(methodNode *tree_sitter.Node, decorators []*tree_sitter.Node, source []byte, basePath string, classTags []string, classSec classSecurityInfo, idx *index.Index, filePath string) *Operation {
+func extractMethodOperationWithDecorators(methodNode *tree_sitter.Node, decorators []*tree_sitter.Node, source []byte, basePath string, classTags []string, classSec classSecurityInfo, idx *index.Index, filePath string, methodReturnTypes map[string]string) []*Operation {
 	httpMethod := ""
-	methodPath := ""
+	methodPaths := []string{""}
 	methodName := ""
 	returnType := ""
 	responseStatus := 0
@@ -349,33 +401,34 @@ func extractMethodOperationWithDecorators(methodNode *tree_sitter.Node, decorato
 	producesContentType := ""
 	var paramOverrides []paramOverride
 	var params []*Parameter
+	hasFileUpload := false
 
 	processDecorator := func(name, args string) {
 		switch name {
 		case "Get":
 			httpMethod = "GET"
-			methodPath = stripTSQuotes(extractFirstArg(args))
+			methodPaths = extractRouteDecoratorPaths(args)
 		case "Post":
 			httpMethod = "POST"
-			methodPath = stripTSQuotes(extractFirstArg(args))
+			methodPaths = extractRouteDecoratorPaths(args)
 		case "Put":
 			httpMethod = "PUT"
-			methodPath = stripTSQuotes(extractFirstArg(args))
+			methodPaths = extractRouteDecoratorPaths(args)
 		case "Delete":
 			httpMethod = "DELETE"
-			methodPath = stripTSQuotes(extractFirstArg(args))
+			methodPaths = extractRouteDecoratorPaths(args)
 		case "Patch":
 			httpMethod = "PATCH"
-			methodPath = stripTSQuotes(extractFirstArg(args))
+			methodPaths = extractRouteDecoratorPaths(args)
 		case "Head":
 			httpMethod = "HEAD"
-			methodPath = stripTSQuotes(extractFirstArg(args))
+			methodPaths = extractRouteDecoratorPaths(args)
 		case "Options":
 			httpMethod = "OPTIONS"
-			methodPath = stripTSQuotes(extractFirstArg(args))
+			methodPaths = extractRouteDecoratorPaths(args)
 		case "All":
 			httpMethod = "GET"
-			methodPath = stripTSQuotes(extractFirstArg(args))
+			methodPaths = extractRouteDecoratorPaths(args)
 		case "HttpCode":
 			if code := extractFirstArg(args); code != "" {
 				if v := parseIntSafe(code); v > 0 {
@@ -430,6 +483,14 @@ func extractMethodOperationWithDecorators(methodNode *tree_sitter.Node, decorato
 				}
 				responseHeaders[hName] = desc
 			}
+		case "Header":
+			// NestJS @Header('X-Name', 'value') is a concrete response header.
+			if hName := stripTSQuotes(extractFirstArg(args)); hName != "" {
+				if responseHeaders == nil {
+					responseHeaders = make(map[string]string)
+				}
+				responseHeaders[hName] = hName
+			}
 		case "UseGuards":
 			requiresAuth = true
 		case "ApiBearerAuth":
@@ -445,6 +506,24 @@ func extractMethodOperationWithDecorators(methodNode *tree_sitter.Node, decorato
 		case "ApiOAuth2":
 			requiresAuth = true
 			security = append(security, parseApiOAuth2Decorator(args)...)
+		case "Roles", "Scopes", "RequireRight":
+			// NestJS RBAC convention: @Roles('admin', 'ops') /
+			// @Scopes('read:users'). Every string-literal argument becomes
+			// a security requirement (OAuth2 scope).
+			requiresAuth = true
+			security = append(security, scopeArgs(args)...)
+		case "RequireGroup":
+			// Group/role membership marks auth required but is not an OAuth2
+			// scope; do not emit group names as scope tokens.
+			requiresAuth = true
+		case "ANONYMOUS", "Anonymous", "Public":
+			requiresAuth = false
+			security = nil
+		case "UseInterceptors":
+			if strings.Contains(args, "FileInterceptor") || strings.Contains(args, "FilesInterceptor") {
+				hasFileUpload = true
+				consumesContentType = "multipart/form-data"
+			}
 		}
 	}
 
@@ -481,6 +560,9 @@ func extractMethodOperationWithDecorators(methodNode *tree_sitter.Node, decorato
 	if httpMethod == "" {
 		return nil
 	}
+	if returnType == "" {
+		returnType = inferTSReturnTypeFromMethodBody(methodNode, source, methodReturnTypes)
+	}
 
 	// Priority: @ApiOperation > JSDoc > camelCase fallback
 	summary := apiOpSummary
@@ -506,17 +588,22 @@ func extractMethodOperationWithDecorators(methodNode *tree_sitter.Node, decorato
 		applyParamOverride(params, po)
 	}
 
-	fullPath := buildPath(basePath, methodPath)
-	params = ensurePathParameters(params, fullPath)
+	params = expandDTOQueryParams(params, idx)
 
 	requestBodyType := ""
 	var filteredParams []*Parameter
+	var formParams []*Parameter
 	for _, p := range params {
 		if p.In == "body" {
 			requestBodyType = p.Type
+		} else if p.In == "form" {
+			formParams = append(formParams, p)
 		} else if p.In != "" && p.In != "skip" {
 			filteredParams = append(filteredParams, p)
 		}
+	}
+	if hasFileUpload && len(formParams) == 0 {
+		formParams = append(formParams, &Parameter{Name: "file", In: "form", Type: "file", Required: true})
 	}
 
 	if responseStatus == 0 {
@@ -526,33 +613,45 @@ func extractMethodOperationWithDecorators(methodNode *tree_sitter.Node, decorato
 	// Capture source location from method node
 	startPos := methodNode.StartPosition()
 
-	return &Operation{
-		Path:                   fullPath,
-		Method:                 httpMethod,
-		OperationID:            methodName,
-		Summary:                summary,
-		Description:            description,
-		Tags:                   classTags,
-		Parameters:             filteredParams,
-		RequestBodyType:        requestBodyType,
-		RequestBodyDescription: requestBodyDescription,
-		ResponseType:           returnType,
-		ResponseStatus:         responseStatus,
-		Deprecated:             deprecated,
-		DeprecatedSince:        deprecatedSince,
-		Security:               security,
-		RequiresAuth:           requiresAuth,
-		ApiResponses:           apiResponses,
-		ResponseHeaders:        responseHeaders,
-		NullableResponse:       nullableResponse,
-		RateLimited:            rateLimited,
-		ConsumesContentType:    consumesContentType,
-		ProducesContentType:    producesContentType,
-		ErrorResponses:         errorResponses,
-		File:                   filePath,
-		Line:                   int(startPos.Row) + 1,
-		Column:                 int(startPos.Column) + 1,
+	var ops []*Operation
+	for i, methodPath := range methodPaths {
+		fullPath := buildPath(basePath, methodPath)
+		opParams := cloneTSParams(filteredParams)
+		opParams = ensurePathParameters(opParams, fullPath)
+		opID := methodName
+		if i > 0 {
+			opID = methodName + "_" + routeOperationIDSuffix(methodPath)
+		}
+		ops = append(ops, &Operation{
+			Path:                   fullPath,
+			Method:                 httpMethod,
+			OperationID:            opID,
+			Summary:                summary,
+			Description:            description,
+			Tags:                   classTags,
+			Parameters:             opParams,
+			FormParams:             cloneTSParams(formParams),
+			RequestBodyType:        requestBodyType,
+			RequestBodyDescription: requestBodyDescription,
+			ResponseType:           normalizeTSReturnType(returnType),
+			ResponseStatus:         responseStatus,
+			Deprecated:             deprecated,
+			DeprecatedSince:        deprecatedSince,
+			Security:               security,
+			RequiresAuth:           requiresAuth,
+			ApiResponses:           apiResponses,
+			ResponseHeaders:        responseHeaders,
+			NullableResponse:       nullableResponse,
+			RateLimited:            rateLimited,
+			ConsumesContentType:    consumesContentType,
+			ProducesContentType:    producesContentType,
+			ErrorResponses:         errorResponses,
+			File:                   filePath,
+			Line:                   int(startPos.Row) + 1,
+			Column:                 int(startPos.Column) + 1,
+		})
 	}
+	return ops
 }
 
 // extractMethodParameters extracts parameters from formal_parameters.
@@ -586,6 +685,7 @@ func extractSingleParameter(paramNode *tree_sitter.Node, source []byte, idx *ind
 	description := ""
 	example := ""
 	var minimum, maximum, minLength, maxLength *int
+	fileUploadParam := false
 
 	for i := uint(0); i < paramNode.ChildCount(); i++ {
 		child := paramNode.Child(i)
@@ -593,6 +693,9 @@ func extractSingleParameter(paramNode *tree_sitter.Node, source []byte, idx *ind
 		case "decorator":
 			decName, decArgs := extractTSDecorator(child, source)
 			in, apiParamName = classifyNestDecorator(decName, decArgs, in, apiParamName)
+			if decName == "UploadedFile" || decName == "UploadedFiles" {
+				fileUploadParam = true
+			}
 
 			// class-validator decorators
 			switch decName {
@@ -654,6 +757,9 @@ func extractSingleParameter(paramNode *tree_sitter.Node, source []byte, idx *ind
 	if apiParamName != "" {
 		paramName = apiParamName
 	}
+	if fileUploadParam {
+		paramType = "file"
+	}
 	if in == "" {
 		in = inferParameterLocation(paramType)
 	}
@@ -684,9 +790,17 @@ func classifyNestDecorator(decName, decArgs, currentIn, currentApiName string) (
 		apiName = stripTSQuotes(extractFirstArg(decArgs))
 	case "Query":
 		in = "query"
-		apiName = stripTSQuotes(extractFirstArg(decArgs))
+		if arg := strings.TrimSpace(extractFirstArg(decArgs)); isTSQuoted(arg) {
+			apiName = stripTSQuotes(arg)
+		}
 	case "Body":
 		in = "body"
+	case "UploadedFile", "UploadedFiles":
+		in = "form"
+		apiName = stripTSQuotes(extractFirstArg(decArgs))
+		if apiName == "" {
+			apiName = "file"
+		}
 	case "Headers":
 		in = "header"
 		apiName = stripTSQuotes(extractFirstArg(decArgs))
@@ -695,6 +809,16 @@ func classifyNestDecorator(decName, decArgs, currentIn, currentApiName string) (
 	}
 
 	return in, apiName
+}
+
+func isTSQuoted(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 {
+		return false
+	}
+	return (s[0] == '\'' && s[len(s)-1] == '\'') ||
+		(s[0] == '"' && s[len(s)-1] == '"') ||
+		(s[0] == '`' && s[len(s)-1] == '`')
 }
 
 // isNestInfraType checks if a type is a NestJS/Express infrastructure type.
@@ -714,6 +838,48 @@ func inferParameterLocation(typeName string) string {
 		return "query"
 	}
 	return "body"
+}
+
+func expandDTOQueryParams(params []*Parameter, idx *index.Index) []*Parameter {
+	if idx == nil {
+		return params
+	}
+	var out []*Parameter
+	for _, p := range params {
+		if p == nil {
+			continue
+		}
+		decl, ok := idx.ResolveSimple(normalizeTSParamType(p.Type))
+		if p.In != "query" || !ok || len(decl.Fields) == 0 {
+			out = append(out, p)
+			continue
+		}
+		for _, field := range decl.Fields {
+			name := field.JSONName
+			if name == "" {
+				name = field.Name
+			}
+			out = append(out, &Parameter{
+				Name:        name,
+				In:          "query",
+				Type:        field.Type,
+				Required:    field.Required,
+				Description: field.Description,
+				Example:     field.Example,
+				File:        p.File,
+				Line:        p.Line,
+				Column:      p.Column,
+			})
+		}
+	}
+	return out
+}
+
+func normalizeTSParamType(t string) string {
+	t = strings.TrimSpace(t)
+	t = strings.TrimPrefix(t, "Readonly<")
+	t = strings.TrimSuffix(t, ">")
+	return strings.TrimSuffix(t, "[]")
 }
 
 // extractTSDecorator extracts decorator name and arguments from a decorator node.
@@ -751,22 +917,263 @@ func extractFirstArg(args string) string {
 		return ""
 	}
 
-	// Handle first argument only (before first comma, respecting nested parens)
-	depth := 0
-	for i, c := range args {
-		switch c {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth == 0 {
-				return strings.TrimSpace(args[:i])
-			}
-		}
+	parts := splitTSArgs(args)
+	if len(parts) > 0 {
+		return parts[0]
 	}
 
 	return args
+}
+
+func extractRouteDecoratorPaths(args string) []string {
+	first := strings.TrimSpace(extractFirstArg(args))
+	if first == "" {
+		return []string{""}
+	}
+	if strings.HasPrefix(first, "[") && strings.HasSuffix(first, "]") {
+		inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(first, "["), "]"))
+		var paths []string
+		for _, part := range splitTSArgs(inner) {
+			path := stripTSQuotes(part)
+			if path != "" {
+				paths = append(paths, path)
+			}
+		}
+		if len(paths) > 0 {
+			return paths
+		}
+	}
+	return []string{stripTSQuotes(first)}
+}
+
+func splitTSArgs(args string) []string {
+	var out []string
+	depth := 0
+	start := 0
+	quote := rune(0)
+	for i, c := range args {
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				out = append(out, strings.TrimSpace(args[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	out = append(out, strings.TrimSpace(args[start:]))
+	return out
+}
+
+func cloneTSParams(params []*Parameter) []*Parameter {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make([]*Parameter, 0, len(params))
+	for _, p := range params {
+		if p == nil {
+			continue
+		}
+		cp := *p
+		out = append(out, &cp)
+	}
+	return out
+}
+
+func routeOperationIDSuffix(path string) string {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return "root"
+	}
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range path {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		default:
+			if !lastUnderscore {
+				b.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "_")
+}
+
+func normalizeTSReturnType(returnType string) string {
+	returnType = strings.TrimSpace(returnType)
+	for {
+		trimmed := strings.TrimSpace(returnType)
+		trimmed = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "("), ")"))
+		switch {
+		case strings.HasPrefix(trimmed, "Promise<") && strings.HasSuffix(trimmed, ">"):
+			returnType = strings.TrimSuffix(strings.TrimPrefix(trimmed, "Promise<"), ">")
+		case strings.HasPrefix(trimmed, "Observable<") && strings.HasSuffix(trimmed, ">"):
+			returnType = strings.TrimSuffix(strings.TrimPrefix(trimmed, "Observable<"), ">")
+		case strings.Contains(trimmed, "|"):
+			parts := strings.Split(trimmed, "|")
+			var kept []string
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if part == "" || part == "null" || part == "undefined" {
+					continue
+				}
+				kept = append(kept, part)
+			}
+			if len(kept) == 1 {
+				returnType = kept[0]
+				continue
+			}
+			if len(kept) > 1 {
+				return strings.Join(kept, " | ")
+			}
+			return ""
+		default:
+			return trimmed
+		}
+	}
+}
+
+func inferTSReturnTypeFromMethodBody(methodNode *tree_sitter.Node, source []byte, methodReturnTypes map[string]string) string {
+	body := methodNode.Utf8Text(source)
+	callName := ""
+	for _, pattern := range []string{
+		`return\s+await\s+(?:this\.[A-Za-z_][A-Za-z0-9_]*\.|[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(`,
+		`return\s+(?:this\.[A-Za-z_][A-Za-z0-9_]*\.|[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(`,
+	} {
+		if m := regexp.MustCompile(pattern).FindStringSubmatch(body); len(m) == 2 {
+			callName = m[1]
+			break
+		}
+	}
+	if callName == "" {
+		return ""
+	}
+	if typ := methodReturnTypes[callName]; typ != "" {
+		return typ
+	}
+	signatureRe := regexp.MustCompile(`(?s)\b` + regexp.QuoteMeta(callName) + `\s*\([^)]*\)\s*:\s*([^{};]+?)\s*(?:\{|;)`)
+	if m := signatureRe.FindStringSubmatch(string(source)); len(m) == 2 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
+func normalizeInlineTSResponseSchemas(result *Result) {
+	if result == nil || result.Schemas == nil {
+		return
+	}
+	for _, op := range result.Operations {
+		if op == nil {
+			continue
+		}
+		schema, ok := parseInlineTSObjectSchema(op.ResponseType)
+		if !ok {
+			continue
+		}
+		name := exportedSyntheticSchemaName(op.OperationID, "Response")
+		result.Schemas[name] = schema
+		op.ResponseType = name
+	}
+}
+
+func parseInlineTSObjectSchema(typeText string) (map[string]any, bool) {
+	typeText = strings.TrimSpace(typeText)
+	if !strings.HasPrefix(typeText, "{") || !strings.HasSuffix(typeText, "}") {
+		return nil, false
+	}
+	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(typeText, "{"), "}"))
+	if body == "" {
+		return map[string]any{"type": "object"}, true
+	}
+	properties := map[string]any{}
+	for _, part := range splitTSObjectFields(body) {
+		if part == "" {
+			continue
+		}
+		name, typ, ok := strings.Cut(part, ":")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(strings.TrimSuffix(name, "?"))
+		if name == "" {
+			continue
+		}
+		properties[name] = tsTypeToSchema(strings.TrimSpace(typ))
+	}
+	return map[string]any{"type": "object", "properties": properties}, true
+}
+
+func splitTSObjectFields(body string) []string {
+	var out []string
+	depth := 0
+	start := 0
+	for i, c := range body {
+		switch c {
+		case '<', '[', '{', '(':
+			depth++
+		case '>', ']', '}', ')':
+			if depth > 0 {
+				depth--
+			}
+		case ';', ',':
+			if depth == 0 {
+				out = append(out, strings.TrimSpace(body[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	out = append(out, strings.TrimSpace(body[start:]))
+	return out
+}
+
+func tsTypeToSchema(typeText string) map[string]any {
+	typeText = strings.TrimSpace(typeText)
+	if strings.HasSuffix(typeText, "[]") {
+		return map[string]any{"type": "array", "items": tsTypeToSchema(strings.TrimSuffix(typeText, "[]"))}
+	}
+	switch strings.ToLower(typeText) {
+	case "string":
+		return map[string]any{"type": "string"}
+	case "number":
+		return map[string]any{"type": "number"}
+	case "boolean":
+		return map[string]any{"type": "boolean"}
+	case "void", "undefined", "null":
+		return map[string]any{"nullable": true}
+	default:
+		return map[string]any{"$ref": "#/components/schemas/" + typeText}
+	}
+}
+
+func exportedSyntheticSchemaName(operationID, suffix string) string {
+	base := routeOperationIDSuffix(operationID)
+	if base == "" {
+		base = "operation"
+	}
+	parts := strings.Split(base, "_")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, "") + suffix
 }
 
 func stripTSQuotes(s string) string {
@@ -941,6 +1348,60 @@ func extractAllArgs(args string) []string {
 		results = append(results, v)
 	}
 	return results
+}
+
+// scopeArgs returns only the quoted string-literal arguments from a decorator's
+// argument list. Bare identifiers and member expressions (for example an enum
+// reference such as SecurityGroups.ORG_ADMIN) are not literal scope tokens and
+// are dropped so they never leak into the OAuth2 scope list and trip
+// scope-format checks.
+func scopeArgs(args string) []string {
+	args = strings.TrimPrefix(args, "(")
+	args = strings.TrimSuffix(args, ")")
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return nil
+	}
+	var results []string
+	depth := 0
+	start := 0
+	flush := func(seg string) {
+		seg = strings.TrimSpace(seg)
+		if isTSStringLiteral(seg) {
+			if v := stripTSQuotes(seg); v != "" {
+				results = append(results, v)
+			}
+		}
+	}
+	for i, c := range args {
+		switch c {
+		case '(', '{', '[':
+			depth++
+		case ')', '}', ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				flush(args[start:i])
+				start = i + 1
+			}
+		}
+	}
+	flush(args[start:])
+	return results
+}
+
+// isTSStringLiteral reports whether s is a single-, double-, or back-quoted
+// string literal.
+func isTSStringLiteral(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 {
+		return false
+	}
+	switch s[0] {
+	case '\'', '"', '`':
+		return s[len(s)-1] == s[0]
+	}
+	return false
 }
 
 // extractDecoratorProperties parses object-style decorator arguments like

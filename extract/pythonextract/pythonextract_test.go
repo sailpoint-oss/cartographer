@@ -14,7 +14,7 @@ const fastapiControllerSource = `"""User management routes."""
 from typing import Annotated, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, Field
 
 from .auth import get_current_user
@@ -41,12 +41,14 @@ class CreateUserDto(BaseModel):
 
 @router.get("/")
 async def list_users(
+    response: Response,
     offset: int = 0,
     limit: Annotated[int, Query(le=100)] = 20,
     filter: str | None = None,
     _user=Depends(get_current_user),
 ) -> list[UserDto]:
     """List all users."""
+    response.headers["X-Total-Count"] = "0"
     return []
 
 
@@ -79,9 +81,11 @@ bp = Blueprint("users", __name__, url_prefix="/users")
 @bp.route("/", methods=["GET", "POST"])
 def users():
     """List or create users."""
+    response = jsonify([])
+    response.headers["X-Total-Count"] = "0"
     if request.method == "POST":
         return jsonify({}), 201
-    return jsonify([])
+    return response
 
 
 @bp.route("/<user_id>", methods=["DELETE"])
@@ -142,6 +146,20 @@ schema = make_executable_schema(type_defs, query)
 app = GraphQL(schema)
 `
 
+// --- Generic agent-server fixture ---
+
+const agentServerSource = `from example_agents import ExampleAgent, ExampleServer
+
+
+primary_agent = ExampleAgent("primary")
+embedded_agent = ExampleAgent("embedded")
+
+
+server = ExampleServer("example")
+server.register_agent("/", primary_agent)
+server.register_agent("/embedded", embedded_agent)
+`
+
 // --- Shared helpers ---
 
 func writeTestFile(t *testing.T, dir, name, content string) {
@@ -197,6 +215,9 @@ func TestFastAPIExtraction(t *testing.T) {
 		}
 		if queryCount < 3 {
 			t.Errorf("expected >=3 query params, got %d: %+v", queryCount, op.Parameters)
+		}
+		if _, ok := op.ResponseHeaders["X-Total-Count"]; !ok {
+			t.Errorf("expected X-Total-Count response header, got %#v", op.ResponseHeaders)
 		}
 	} else {
 		t.Errorf("missing GET /api/v1/users operation (router prefix not applied); got keys: %v", keysOfOps(byKey))
@@ -468,7 +489,7 @@ func TestAriadneGraphQLStub(t *testing.T) {
 requires = ["hatchling"]
 
 [project]
-name = "aperture-test"
+name = "example-graphql-test"
 version = "1.2.3"
 description = "Test GraphQL service"
 `)
@@ -500,14 +521,151 @@ description = "Test GraphQL service"
 	}
 
 	// pyproject metadata should be populated
-	if result.Metadata.Name != "aperture-test" {
-		t.Errorf("expected name=aperture-test, got %q", result.Metadata.Name)
+	if result.Metadata.Name != "example-graphql-test" {
+		t.Errorf("expected name=example-graphql-test, got %q", result.Metadata.Name)
 	}
 	if result.Metadata.Version != "1.2.3" {
 		t.Errorf("expected version=1.2.3, got %q", result.Metadata.Version)
 	}
 	if result.Metadata.Description != "Test GraphQL service" {
 		t.Errorf("expected description, got %q", result.Metadata.Description)
+	}
+}
+
+// --- Generic agent-server registration ---
+
+func TestAgentServerRegistrationExtraction(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "app.py", agentServerSource)
+
+	result, err := Extract(Config{
+		RootDir:    dir,
+		SourceDirs: []string{dir},
+	})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+
+	if result.Framework != "agent" {
+		t.Errorf("expected framework=agent, got %q", result.Framework)
+	}
+
+	byKey := make(map[string]*Operation)
+	for _, op := range result.Operations {
+		byKey[op.Method+" "+op.Path] = op
+	}
+	for _, want := range []string{
+		"POST /",
+		"GET /.well-known/agent.json",
+		"POST /embedded",
+		"GET /embedded/.well-known/agent.json",
+	} {
+		if _, ok := byKey[want]; !ok {
+			t.Errorf("missing %q; got keys: %v", want, keysOfOps(byKey))
+		}
+	}
+	if op := byKey["POST /"]; op == nil || op.ProducesContentType != "text/event-stream" {
+		t.Errorf("POST / should produce text/event-stream, got %#v", op)
+	}
+}
+
+func TestAgentTaskRegistrationExtraction(t *testing.T) {
+	dir := t.TempDir()
+	const taskServerSource = `from example_agents import ExampleServer
+from example_tasks import create_identify_task, create_generate_task
+
+
+def create_server(app):
+    server = ExampleServer("example")
+    server.register_task(
+        path="/example-agent/identify-target",
+        task=create_identify_task(),
+    )
+    server.register_task(path="/example-agent/generate-config", task=create_generate_task())
+    return server
+`
+	writeTestFile(t, dir, "server.py", taskServerSource)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+	if result.Framework != "agent" {
+		t.Errorf("expected framework=agent, got %q", result.Framework)
+	}
+	byKey := make(map[string]*Operation)
+	for _, op := range result.Operations {
+		byKey[op.Method+" "+op.Path] = op
+	}
+	for _, want := range []string{
+		"POST /example-agent/identify-target",
+		"POST /example-agent/generate-config",
+	} {
+		if _, ok := byKey[want]; !ok {
+			t.Errorf("missing task op %q; got keys: %v", want, keysOfOps(byKey))
+		}
+	}
+	// A task-only server must NOT synthesise a root A2A agent surface.
+	if _, ok := byKey["POST /"]; ok {
+		t.Errorf("task-only server should not emit a root agent stream operation")
+	}
+}
+
+func TestSingleAgentBootstrapExtraction(t *testing.T) {
+	dir := t.TempDir()
+	const mainSource = `import asyncio
+from sp_agents.agents import TemplateAgent
+from agent import config
+
+
+async def main() -> None:
+    agent: TemplateAgent = TemplateAgent.from_config(config)
+    await agent.arun_server_deployed()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+`
+	writeTestFile(t, dir, "__main__.py", mainSource)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+	byKey := make(map[string]*Operation)
+	for _, op := range result.Operations {
+		byKey[op.Method+" "+op.Path] = op
+	}
+	for _, want := range []string{"POST /", "GET /.well-known/agent.json"} {
+		if _, ok := byKey[want]; !ok {
+			t.Errorf("missing implicit agent op %q; got keys: %v", want, keysOfOps(byKey))
+		}
+	}
+}
+
+func TestA2AStarletteBootstrapExtraction(t *testing.T) {
+	dir := t.TempDir()
+	const serverSource = `from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+
+
+def create_app(agent):
+    handler = DefaultRequestHandler(agent_executor=agent, task_store=None)
+    app = A2AStarletteApplication(agent_card=None, http_handler=handler)
+    return app.build()
+`
+	writeTestFile(t, dir, "a2a_server.py", serverSource)
+
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+	byKey := make(map[string]*Operation)
+	for _, op := range result.Operations {
+		byKey[op.Method+" "+op.Path] = op
+	}
+	if _, ok := byKey["GET /.well-known/agent.json"]; !ok {
+		t.Errorf("expected implicit agent card op for A2AStarletteApplication; got keys: %v", keysOfOps(byKey))
 	}
 }
 

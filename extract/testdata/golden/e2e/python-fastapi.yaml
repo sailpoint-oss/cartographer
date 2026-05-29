@@ -1,0 +1,214 @@
+components:
+    schemas:
+        BaseModel:
+            description: 'External type: BaseModel'
+            type: object
+            x-source:
+                stubName: BaseModel
+        CreateUserDto:
+            allOf:
+                - $ref: '#/components/schemas/BaseModel'
+                - properties:
+                    age:
+                        default: None
+                        format: int32
+                        nullable: true
+                        type: integer
+                    email:
+                        type: string
+                    name:
+                        type: string
+                  required:
+                    - email
+                    - name
+                  type: object
+            description: Payload for creating a user.
+            x-implements:
+                - BaseModel
+        None:
+            description: 'External type: None'
+            type: object
+            x-source:
+                stubName: None
+        Response:
+            description: 'External type: Response'
+            type: object
+            x-source:
+                stubName: Response
+        UserDto:
+            allOf:
+                - $ref: '#/components/schemas/BaseModel'
+                - properties:
+                    age:
+                        default: None
+                        format: int32
+                        nullable: true
+                        type: integer
+                    email:
+                        default: Field(..., description="Contact email")
+                        description: Contact email
+                        type: string
+                    id:
+                        format: uuid
+                        type: string
+                    name:
+                        type: string
+                    tags:
+                        default: '[]'
+                        items:
+                            type: string
+                        type: array
+                  required:
+                    - id
+                    - name
+                  type: object
+            description: A user in the system.
+            x-implements:
+                - BaseModel
+        list:
+            description: 'External type: list'
+            type: object
+            x-source:
+                stubName: list
+        strNone:
+            description: 'External type: str | None'
+            type: object
+            x-source:
+                stubName: str | None
+    securitySchemes:
+        bearerAuth:
+            scheme: bearer
+            type: http
+info:
+    title: Example FastAPI
+    version: "1.0"
+    x-service-framework: fastapi
+openapi: 3.0.3
+paths:
+    /api/v1/users:
+        get:
+            description: List all users.
+            operationId: list_users
+            parameters:
+                - explode: true
+                  in: query
+                  name: filter
+                  required: false
+                  schema: {}
+                  style: form
+                - description: Max number of results to return.
+                  example: "250"
+                  explode: true
+                  in: query
+                  name: limit
+                  required: false
+                  schema:
+                    format: int32
+                    type: integer
+                  style: form
+                - description: Offset into the full result set. Usually specified with `limit` to paginate through the results.
+                  example: "0"
+                  explode: true
+                  in: query
+                  name: offset
+                  required: false
+                  schema:
+                    format: int32
+                    type: integer
+                  style: form
+                - explode: true
+                  in: query
+                  name: response
+                  required: true
+                  schema: {}
+                  style: form
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/list'
+                    description: List of Users
+                    headers:
+                        X-Total-Count:
+                            description: X-Total-Count
+                            schema:
+                                format: int64
+                                type: integer
+            security:
+                - bearerAuth: []
+            summary: List users
+        post:
+            description: Create a new user.
+            operationId: create_user
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/BaseModel'
+                                - properties:
+                                    age:
+                                        default: None
+                                        format: int32
+                                        nullable: true
+                                        type: integer
+                                    email:
+                                        type: string
+                                    name:
+                                        type: string
+                                  required:
+                                    - email
+                                    - name
+                                  type: object
+                            description: Payload for creating a user.
+                            x-implements:
+                                - BaseModel
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/UserDto'
+                    description: User created
+            summary: Create user
+    /api/v1/users/{user_id}:
+        delete:
+            description: Delete a user.
+            operationId: delete_user
+            parameters:
+                - in: path
+                  name: user_id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                  style: simple
+            responses:
+                "204":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/None'
+                    description: User deleted
+            summary: Delete user
+        get:
+            description: Get a user by ID.
+            operationId: get_user
+            parameters:
+                - in: path
+                  name: user_id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                  style: simple
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/UserDto'
+                    description: User
+            summary: Get user

@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/index"
 	"github.com/sailpoint-oss/cartographer/extract/sharedspec"
 	"github.com/sailpoint-oss/cartographer/extract/specmodel"
@@ -19,7 +18,6 @@ type SpecConfig struct {
 	ServiceTemplate string // e.g. "java-spring"
 	TreeShake       bool
 	ErrorSchema     string
-	AuthScope       authscope.ApplyOptions
 }
 
 // GenerateSpec converts Java extraction results into a complete OpenAPI spec.
@@ -34,7 +32,6 @@ func GenerateSpec(result *Result, cfg SpecConfig) map[string]any {
 		ServiceTemplate: cfg.ServiceTemplate,
 		TreeShake:       cfg.TreeShake,
 		ErrorSchema:     cfg.ErrorSchema,
-		AuthScope:       cfg.AuthScope,
 	}, adapter)
 }
 
@@ -311,9 +308,7 @@ func extractAnnotationFirstArg(args string) string {
 
 // EnrichRequestBodySchema merges @Valid/@NotNull field constraints from the type index.
 func (a *javaAdapter) EnrichRequestBodySchema(typeName string, schema map[string]any, types map[string]*index.TypeDecl) map[string]any {
-	if schema == nil {
-		schema = map[string]any{"type": "object", "properties": map[string]any{}}
-	}
+	schema = sharedspec.EnrichSchemaObjectTarget(schema)
 	decl := a.FindTypeBySimpleName(types, stripGenericSuffix(typeName))
 	if decl == nil {
 		return schema

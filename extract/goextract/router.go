@@ -8,6 +8,8 @@ import (
 	"go/token"
 	"go/types"
 	"strings"
+
+	"github.com/sailpoint-oss/cartographer/extract/sharedspec"
 )
 
 // RouteInfo contains information extracted from a router registration call.
@@ -154,6 +156,10 @@ func (ra *RouterAnalyzer) AnalyzeRouterCall(call *ast.CallExpr, file *ast.File, 
 	if route.Method == "" {
 		route.Method = ra.extractMethod(call, file, fset)
 	}
+
+	// Collapse any duplicate separators introduced by a root-prefix subrouter
+	// (PathPrefix("/").Subrouter()) so paths like "//streams" become "/streams".
+	route.Path = collapseSlashes(route.Path)
 
 	return route
 }
@@ -528,86 +534,77 @@ func (ra *RouterAnalyzer) unwrapHandler(expr ast.Expr, info *types.Info) (string
 
 	switch e := expr.(type) {
 	case *ast.CallExpr:
+		// Type conversions to a handler: http.HandlerFunc(s.createStream) or
+		// http.Handler(h). Unwrap to the converted expression so the terminal
+		// handler (not the conversion) is analysed.
+		if ra.isHandlerConversion(e) && len(e.Args) == 1 {
+			return ra.unwrapHandler(e.Args[0], info)
+		}
+
 		// Check if this is a call expression - could be middleware
 		if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
 			methodName := sel.Sel.Name
 
-			// Pattern 1: Direct web.RequireRights(summarizer, "right1", "right2")(handler)
-			if methodName == "RequireRights" && ra.isWebPackage(sel.X) {
-				// Extract rights from second argument onwards (first is summarizer)
-				if len(e.Args) >= 2 {
-					for i := 1; i < len(e.Args); i++ {
-						if right := ra.extractRightString(e.Args[i], info); right != "" {
-							rights = append(rights, right)
-						}
-					}
-				}
-
-				// The handler should be passed to the returned middleware
-				// Look for the pattern: RequireRights(...)(handler)
-				// Since this is the inner call, we need to check the parent
-				return "RequireRightsWrappedHandler", rights
+			// Pattern 1: Service wrapper - handles multiple argument orders:
+			// Pattern A: s.requireRight("right", handler) - right first, handler second.
+			// Pattern B: s.requireRight(handler, "right1", "right2") - handler first, rights after.
+			// Pattern C: s.requireRight(summarizer, "right", handler) - summarizer, right, handler.
+			// Receiver wrappers must be checked before generic auth function names
+			// because local helpers often share names such as requireRight.
+			if ra.isRequireWrapper(methodName) && len(e.Args) >= 2 {
+				return ra.unwrapRequireWrapper(e.Args, info)
 			}
 
-		// Pattern 2: Service wrapper - handles multiple argument orders:
-		// Pattern A: s.requireRight("right", handler) - right first, handler second.
-		// Pattern B: s.requireRight(handler, "right1", "right2") - handler first, rights after
-		// Pattern C: requireRight(summarizer, "right", handler) - summarizer, right, handler (three args)
-		if (strings.HasPrefix(strings.ToLower(methodName), "require") &&
-			(strings.Contains(strings.ToLower(methodName), "right") ||
-				strings.Contains(strings.ToLower(methodName), "auth"))) &&
-			len(e.Args) >= 2 {
-
-			// Detect argument order based on types and count
-			firstArgIsString := ra.isStringArg(e.Args[0])
-
-			// Pattern C: requireRight(summarizer, "right", handler) - 3 args, second is string
-			if len(e.Args) == 3 && ra.isStringArg(e.Args[1]) {
-				// Second arg is the right, third is handler
-				if right := ra.extractRightString(e.Args[1], info); right != "" {
-					rights = append(rights, right)
-				}
-				handlerName, innerRights := ra.unwrapHandler(e.Args[2], info)
-				rights = append(rights, innerRights...)
-				return handlerName, rights
-			} else if firstArgIsString && len(e.Args) == 2 {
-				// Pattern A: requireRight("right", handler) - string first, handler second
-				if right := ra.extractRightString(e.Args[0], info); right != "" {
-					rights = append(rights, right)
-				}
-				handlerName, innerRights := ra.unwrapHandler(e.Args[1], info)
-				rights = append(rights, innerRights...)
-				return handlerName, rights
-			} else {
-				// Pattern B: requireRight(handler, "right1", "right2", ...) - handler first, rights after
-				for i := 1; i < len(e.Args); i++ {
-					if right := ra.extractRightString(e.Args[i], info); right != "" {
+			// Pattern 2: a generic auth-requirement call. We extract only
+			// arguments that resolve to actual string values (string
+			// literals or string-typed named constants). This skips
+			// argument positions that hold framework-internal values such
+			// as a summarizer / context / handler that happens to share
+			// the call surface with the scope strings.
+			//
+			// Examples that match:
+			//   web.RequireRights(summarizer, "right1", "right2")(handler)
+			//   auth.RequireScope("read:users")(handler)
+			//   middleware.RequireRoles("admin", "ops")(handler)
+			if sharedspec.IsAuthFunctionName(methodName) {
+				for _, arg := range e.Args {
+					if right := ra.extractAuthScopeString(arg, info); right != "" {
 						rights = append(rights, right)
 					}
 				}
-				handlerName, innerRights := ra.unwrapHandler(e.Args[0], info)
-				rights = append(rights, innerRights...)
+				return methodName + "WrappedHandler", rights
+			}
+
+			// Pattern 4a: Generic middleware wrapper that takes the terminal
+			// handler as one of its arguments, e.g. s.basicAuth(s.getTenant()),
+			// middleware.Chain(h, web.RequireRights(...)), or
+			// rateLimitMiddleware(rl, burst, getJTI, handler). When an argument
+			// is itself a handler we recurse into it so response/status
+			// analysis reaches the real handler instead of stopping at the
+			// wrapper method name. Non-handler arguments are still mined for
+			// auth scope strings.
+			if handlerName, wrapperRights, ok := ra.unwrapGenericWrapper(e.Args, info); ok {
+				rights = append(rights, wrapperRights...)
 				return handlerName, rights
 			}
-		}
 
-			// Pattern 4: Handler factory method: s.GetHandler(), s.createHandler(), etc.
-			// This is a common pattern where methods return http.HandlerFunc
-			// If we get here, it's not a recognized middleware pattern, so it's likely a handler factory
+			// Pattern 4b: Handler factory method: s.GetHandler(), s.createHandler(), etc.
+			// This is a common pattern where methods return http.HandlerFunc.
+			// No handler-typed argument was found, so treat the method itself as
+			// the handler identity.
 			return methodName, rights
 		}
 
-		// Pattern 3: web.RequireRights(...)(handler) - outer call
-		// Check if the function being called is itself a call to RequireRights
+		// Pattern 3: <pkg>.AuthFn(...)(handler) - outer call wraps the
+		// auth-requirement middleware. Extract string-literal args from
+		// the inner call (skipping non-string identifiers) and recurse
+		// into the outer handler argument.
 		if innerCall, ok := e.Fun.(*ast.CallExpr); ok {
 			if sel, ok := innerCall.Fun.(*ast.SelectorExpr); ok {
-				if sel.Sel.Name == "RequireRights" && ra.isWebPackage(sel.X) {
-					// Extract rights from the inner call
-					if len(innerCall.Args) >= 2 {
-						for i := 1; i < len(innerCall.Args); i++ {
-							if right := ra.extractRightString(innerCall.Args[i], info); right != "" {
-								rights = append(rights, right)
-							}
+				if sharedspec.IsAuthFunctionName(sel.Sel.Name) {
+					for _, arg := range innerCall.Args {
+						if right := ra.extractAuthScopeString(arg, info); right != "" {
+							rights = append(rights, right)
 						}
 					}
 
@@ -627,35 +624,33 @@ func (ra *RouterAnalyzer) unwrapHandler(expr ast.Expr, info *types.Info) (string
 
 			// Pattern 5: Direct function middleware wrapper: requireRight(summarizer, "right", handler)
 			// This is similar to Pattern 2 but for package-level functions instead of methods
-			if (strings.HasPrefix(strings.ToLower(funcName), "require") &&
-				(strings.Contains(strings.ToLower(funcName), "right") ||
-					strings.Contains(strings.ToLower(funcName), "auth"))) &&
-				len(e.Args) >= 2 {
+			if ra.isRequireWrapper(funcName) && len(e.Args) >= 2 {
+				return ra.unwrapRequireWrapper(e.Args, info)
+			}
 
-				// Pattern C: requireRight(summarizer, "right", handler) - 3 args, second is string
-				if len(e.Args) == 3 && ra.isStringArg(e.Args[1]) {
-					if right := ra.extractRightString(e.Args[1], info); right != "" {
-						rights = append(rights, right)
-					}
-					handlerName, innerRights := ra.unwrapHandler(e.Args[2], info)
-					rights = append(rights, innerRights...)
-					return handlerName, rights
-				} else if ra.isStringArg(e.Args[0]) && len(e.Args) == 2 {
-					// Pattern A: requireRight("right", handler)
-					if right := ra.extractRightString(e.Args[0], info); right != "" {
-						rights = append(rights, right)
-					}
-					handlerName, innerRights := ra.unwrapHandler(e.Args[1], info)
-					rights = append(rights, innerRights...)
-					return handlerName, rights
-				}
+			// Pattern 5a: package-local middleware wrapper that takes the
+			// terminal handler as an argument, e.g.
+			// Chain(s.listWorkflows(), web.RequireRights(...)). Recurse into the
+			// handler argument so response/status analysis reaches the real
+			// handler instead of stopping at the wrapper name ("Chain").
+			if handlerName, wrapperRights, ok := ra.unwrapGenericWrapper(e.Args, info); ok {
+				rights = append(rights, wrapperRights...)
+				return handlerName, rights
 			}
 
 			return funcName, rights
 		}
 
 	case *ast.SelectorExpr:
-		// Method call: s.handlerFunc()
+		// Chained handler invocation: middleware.Chain(h, mw).ServeHTTP — the
+		// receiver is the wrapper call carrying the terminal handler. Recurse
+		// into the receiver so the real handler is analysed, not "ServeHTTP".
+		if (e.Sel.Name == "ServeHTTP" || e.Sel.Name == "ServeHTTPC") {
+			if _, ok := e.X.(*ast.CallExpr); ok {
+				return ra.unwrapHandler(e.X, info)
+			}
+		}
+		// Method value: s.handlerFunc
 		return e.Sel.Name, rights
 
 	case *ast.Ident:
@@ -669,6 +664,135 @@ func (ra *RouterAnalyzer) unwrapHandler(expr ast.Expr, info *types.Info) (string
 	}
 
 	return "", rights
+}
+
+func (ra *RouterAnalyzer) isRequireWrapper(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasPrefix(lower, "require") &&
+		(strings.Contains(lower, "right") || strings.Contains(lower, "auth"))
+}
+
+// isHandlerConversion reports whether the call is an http.HandlerFunc(x) or
+// http.Handler(x) type conversion.
+func (ra *RouterAnalyzer) isHandlerConversion(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	if sel.Sel.Name != "HandlerFunc" && sel.Sel.Name != "Handler" {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == "http"
+}
+
+// unwrapGenericWrapper handles an unrecognised middleware wrapper that carries
+// the terminal handler as one of its arguments. It returns the inner handler
+// name, any auth scope strings mined from the remaining arguments, and whether
+// a handler-typed argument was found. When no argument looks like a handler the
+// caller should treat the wrapper as a handler factory (ok == false).
+func (ra *RouterAnalyzer) unwrapGenericWrapper(args []ast.Expr, info *types.Info) (string, []string, bool) {
+	rights := make([]string, 0)
+	handlerIdx := -1
+	for i, arg := range args {
+		if ra.isHandlerLikeArg(arg, info) {
+			// Prefer the last handler-typed argument; handlers are conventionally
+			// the final wrapper argument (rateLimit(..., handler)) while a leading
+			// handler (Chain(h, mw)) is still the only handler-typed one.
+			handlerIdx = i
+			continue
+		}
+		// Non-handler argument: mine it for scope strings, recursing into nested
+		// auth-requirement calls (e.g. web.RequireRights(summarizer, "right")).
+		if right := ra.extractAuthScopeString(arg, info); right != "" {
+			rights = append(rights, right)
+			continue
+		}
+		if _, argRights := ra.unwrapHandler(arg, info); len(argRights) > 0 {
+			rights = append(rights, argRights...)
+		}
+	}
+	if handlerIdx < 0 {
+		return "", rights, false
+	}
+	name, innerRights := ra.unwrapHandler(args[handlerIdx], info)
+	rights = append(rights, innerRights...)
+	if name == "" {
+		return "", rights, false
+	}
+	return name, rights, true
+}
+
+// isHandlerLikeArg reports whether an argument is an HTTP handler. It prefers
+// Go type information (http.Handler / http.HandlerFunc) and falls back to a
+// narrow structural check for inline function literals and handler conversions.
+func (ra *RouterAnalyzer) isHandlerLikeArg(expr ast.Expr, info *types.Info) bool {
+	if info != nil {
+		if t := info.TypeOf(expr); t != nil {
+			ts := t.String()
+			if strings.Contains(ts, "http.Handler") || strings.Contains(ts, "http.HandlerFunc") {
+				return true
+			}
+		}
+	}
+	switch e := expr.(type) {
+	case *ast.FuncLit:
+		return true
+	case *ast.CallExpr:
+		// http.HandlerFunc(...) / http.Handler(...) conversion.
+		return ra.isHandlerConversion(e)
+	}
+	return false
+}
+
+// collapseSlashes collapses repeated path separators (e.g. "//x" -> "/x") that
+// arise when a root PathPrefix("/") subrouter prefix is concatenated with a
+// child route path. URL paths always begin with a single "/", so this is safe.
+func collapseSlashes(path string) string {
+	if !strings.Contains(path, "//") {
+		return path
+	}
+	for strings.Contains(path, "//") {
+		path = strings.ReplaceAll(path, "//", "/")
+	}
+	return path
+}
+
+func (ra *RouterAnalyzer) unwrapRequireWrapper(args []ast.Expr, info *types.Info) (string, []string) {
+	rights := make([]string, 0)
+	if len(args) == 0 {
+		return "", rights
+	}
+
+	// Pattern C: requireRight(summarizer, "right", handler)
+	if len(args) == 3 && ra.looksStringLike(args[1], info) {
+		if right := ra.extractRightString(args[1], info); right != "" {
+			rights = append(rights, right)
+		}
+		handlerName, innerRights := ra.unwrapHandler(args[2], info)
+		rights = append(rights, innerRights...)
+		return handlerName, rights
+	}
+
+	// Pattern A: requireRight("right", handler)
+	if len(args) == 2 && ra.looksStringLike(args[0], info) {
+		if right := ra.extractRightString(args[0], info); right != "" {
+			rights = append(rights, right)
+		}
+		handlerName, innerRights := ra.unwrapHandler(args[1], info)
+		rights = append(rights, innerRights...)
+		return handlerName, rights
+	}
+
+	// Pattern B: requireRight(handler, "right1", "right2", ...)
+	for i := 1; i < len(args); i++ {
+		if right := ra.extractRightString(args[i], info); right != "" {
+			rights = append(rights, right)
+		}
+	}
+	handlerName, innerRights := ra.unwrapHandler(args[0], info)
+	rights = append(rights, innerRights...)
+	return handlerName, rights
 }
 
 // extractAnonymousFuncName tries to extract a meaningful name from an anonymous function.
@@ -730,6 +854,13 @@ func (ra *RouterAnalyzer) isStringArg(expr ast.Expr) bool {
 	return false
 }
 
+func (ra *RouterAnalyzer) looksStringLike(expr ast.Expr, info *types.Info) bool {
+	if ra.isStringArg(expr) {
+		return true
+	}
+	return ra.extractAuthScopeString(expr, info) != ""
+}
+
 // extractRightString extracts a right string from an expression (handles literals and constants).
 // Now resolves constant values using type information.
 func (ra *RouterAnalyzer) extractRightString(expr ast.Expr, info *types.Info) string {
@@ -753,6 +884,30 @@ func (ra *RouterAnalyzer) extractRightString(expr ast.Expr, info *types.Info) st
 		}
 		// Fall back to extracted identifier if we can't resolve
 		return ra.extractIdentifier(e)
+	}
+	return ""
+}
+
+// extractAuthScopeString is the strict variant of extractRightString used by
+// the generic auth-function matcher. It only returns values that are
+// definitely strings — string literals or named constants whose typed value
+// is a string. Bare identifiers that don't resolve to a string constant
+// (e.g. a "summarizer" middleware variable passed as an argument) return
+// the empty string so they are not mistaken for scope tokens.
+func (ra *RouterAnalyzer) extractAuthScopeString(expr ast.Expr, info *types.Info) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING && len(e.Value) >= 2 {
+			return e.Value[1 : len(e.Value)-1]
+		}
+	case *ast.Ident:
+		if value := ra.resolveConstant(e, info); value != "" {
+			return value
+		}
+	case *ast.SelectorExpr:
+		if value := ra.resolveSelectorConstant(e, info); value != "" {
+			return value
+		}
 	}
 	return ""
 }

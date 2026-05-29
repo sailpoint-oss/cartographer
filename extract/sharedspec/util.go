@@ -201,25 +201,20 @@ func GetStatusDescription(code int) string {
 	}
 }
 
-// ErrorResponseSchema returns the shared ErrorResponse schema definition.
+// ErrorResponseSchema returns a generic placeholder error schema. The shape
+// is deliberately neutral: cartographer ships an opaque object marked with
+// `x-source.stubName: "LegacyErrorResponse"` so downstream consumers that
+// know what legacy error envelope a particular service uses can resolve the
+// stub into their concrete shape in a post-extract overlay step.
+//
+// Previous implementations sometimes hard-coded consumer-specific error
+// envelopes. Those shapes are vendor fingerprints and belong in a
+// consumer-side overlay catalog.
 func ErrorResponseSchema() map[string]any {
 	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"detailCode": map[string]any{"type": "string"},
-			"trackingId": map[string]any{"type": "string"},
-			"messages": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"locale":       map[string]any{"type": "string"},
-						"localeOrigin": map[string]any{"type": "string"},
-						"text":         map[string]any{"type": "string"},
-					},
-				},
-			},
-		},
+		"type":        "object",
+		"description": "Error response (resolved by consumer overlay if a catalog is configured)",
+		"x-source":    sourceStub("LegacyErrorResponse"),
 	}
 }
 
@@ -253,8 +248,20 @@ func StripGenericSuffix(name string) string {
 	return name
 }
 
-// GenerateStubSchema creates a minimal schema for types that are referenced
-// but not defined in the scanned source (e.g. external dependencies).
+// GenerateStubSchema creates a minimal placeholder schema for types that are
+// referenced but not defined in the scanned source (e.g. external dependencies).
+//
+// The placeholder is intentionally generic: `type: object` plus an
+// `x-source.stubName` entry carrying the literal type name we observed
+// in source. Downstream consumers (private orchestration pipelines, internal
+// catalog overlays) can resolve that stub name to a richer schema if they
+// own a private catalog for those types. Cartographer itself ships only the
+// generic placeholder so the public extractor never carries vendor-specific
+// type vocabulary.
+//
+// A small set of standard, public-RFC schemas (JsonPatch from RFC 6902) is
+// expanded inline because they are not vendor-specific and consumers expect
+// them to be self-describing.
 func GenerateStubSchema(typeName string) map[string]any {
 	switch typeName {
 	case "JsonPatch":
@@ -276,120 +283,20 @@ func GenerateStubSchema(typeName string) map[string]any {
 				"required": []any{"op", "path"},
 			},
 		}
-	case "BaseReferenceDto":
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"type": map[string]any{
-					"type": "string",
-					"enum": []any{"ACCOUNT", "IDENTITY", "ROLE", "ACCESS_PROFILE", "ENTITLEMENT", "SOURCE", "APP"},
-				},
-				"id":   map[string]any{"type": "string"},
-				"name": map[string]any{"type": "string"},
-			},
-			"required": []any{"type", "id"},
-		}
-	case "ObjectImportResult":
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"results": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "object"},
-				},
-			},
-		}
-	case "StatusEnum":
-		return map[string]any{
-			"type": "string",
-			"enum": []any{"ACTIVE", "INACTIVE", "PENDING", "CANCELLED", "ERROR", "COMPLETED"},
-		}
-	case "DtoType":
-		return map[string]any{
-			"type": "string",
-			"enum": []any{"ACCOUNT", "IDENTITY", "ROLE", "ACCESS_PROFILE", "ENTITLEMENT", "SOURCE", "APP"},
-		}
-	case "ErrorMessageDto":
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"locale": map[string]any{
-					"type":    "string",
-					"example": "en-US",
-				},
-				"localeOrigin": map[string]any{
-					"type": "string",
-					"enum": []any{"DEFAULT", "REQUEST"},
-				},
-				"text": map[string]any{"type": "string"},
-			},
-		}
-	case "Locale":
-		return map[string]any{
-			"type":    "string",
-			"example": "en-US",
-		}
-	case "RequestedItemStatus":
-		return map[string]any{
-			"type": "string",
-			"enum": []any{"PENDING", "APPROVED", "REJECTED", "CANCELLED", "COMPLETED", "FAILED", "PROVISIONING"},
-		}
-	case "InnerHit":
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"paths": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string"},
-				},
-			},
-		}
-	case "TypedReference":
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"type": map[string]any{"type": "string"},
-				"id":   map[string]any{"type": "string"},
-			},
-			"required": []any{"type", "id"},
-		}
-	case "Reference", "BaseReference":
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"type": map[string]any{"type": "string"},
-				"id":   map[string]any{"type": "string"},
-				"name": map[string]any{"type": "string"},
-			},
-			"required": []any{"type", "id"},
-		}
-	case "OwnerReference":
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"type": map[string]any{"type": "string"},
-				"id":   map[string]any{"type": "string"},
-				"name": map[string]any{"type": "string"},
-			},
-			"required": []any{"type", "id"},
-		}
-	case "Paginator", "PagingResult":
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"count": map[string]any{"type": "integer"},
-				"items": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "object"},
-				},
-			},
-		}
 	}
 
+	// Generic placeholder: a bare object with the original type name surfaced
+	// in the x-source.stubName entry. Consumers that have a private
+	// catalog for that type can resolve it in a post-extract overlay.
 	return map[string]any{
 		"type":        "object",
 		"description": fmt.Sprintf("External type: %s", typeName),
+		"x-source":    sourceStub(typeName),
 	}
+}
+
+func sourceStub(name string) map[string]any {
+	return map[string]any{"stubName": name}
 }
 
 // TreeShake removes unreferenced schemas from a spec.

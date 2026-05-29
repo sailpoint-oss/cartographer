@@ -5,10 +5,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/generics"
 	"github.com/sailpoint-oss/cartographer/extract/javaextract"
-	"github.com/sailpoint-oss/cartographer/extract/testutil"
 	"github.com/sailpoint-oss/cartographer/extract/tsextract"
 )
 
@@ -74,9 +72,9 @@ func TestInventoryGenerics(t *testing.T) {
 		t.Fatal("missing GET operation on /api/v1/inventory/services")
 	}
 
-	// Verify x-source-line is present
-	if getOp["x-source-line"] == nil {
-		t.Error("expected x-source-line on GET /api/v1/inventory/services")
+	// Verify x-source.line is present
+	if source, _ := getOp["x-source"].(map[string]any); source == nil || source["line"] == nil {
+		t.Error("expected x-source.line on GET /api/v1/inventory/services")
 	}
 
 	responses, ok := getOp["responses"].(map[string]any)
@@ -141,10 +139,9 @@ func TestJavaInheritance(t *testing.T) {
 		TreeShake: true,
 	})
 
-	// With response-prefers-indexed-schema (v4), the UserResource schema is
-	// inlined in the response body rather than referenced via $ref. This means
-	// tree-shake removes it from components/schemas. Verify the allOf pattern
-	// exists in the response body schema instead.
+	// Successful responses now prefer component refs for typed extraction.
+	// Verify the response points at UserResource and the component keeps the
+	// inherited allOf shape.
 	paths, ok := spec["paths"].(map[string]any)
 	if !ok {
 		t.Fatal("no paths")
@@ -171,11 +168,26 @@ func TestJavaInheritance(t *testing.T) {
 	if responseSchema == nil {
 		t.Fatal("no response schema found")
 	}
+	if responseSchema["$ref"] != "#/components/schemas/UserResource" {
+		t.Fatalf("response schema = %v, want UserResource ref", responseSchema)
+	}
 
-	// The schema should have allOf with BaseResource ref (either inline or $ref)
-	allOf, ok := responseSchema["allOf"].([]any)
+	components, ok := spec["components"].(map[string]any)
 	if !ok {
-		t.Fatalf("response schema should have allOf, got %v", responseSchema)
+		t.Fatal("no components")
+	}
+	schemas, ok := components["schemas"].(map[string]any)
+	if !ok {
+		t.Fatal("no component schemas")
+	}
+	userSchema, ok := schemas["UserResource"].(map[string]any)
+	if !ok {
+		t.Fatalf("UserResource schema missing from components: %v", schemas)
+	}
+
+	allOf, ok := userSchema["allOf"].([]any)
+	if !ok {
+		t.Fatalf("UserResource schema should have allOf, got %v", userSchema)
 	}
 	if len(allOf) != 2 {
 		t.Fatalf("allOf should have 2 elements, got %d", len(allOf))
@@ -279,9 +291,9 @@ func TestTSGenerics(t *testing.T) {
 		t.Fatal("missing GET on /api/v1/users")
 	}
 
-	// Verify x-source-line present
-	if getOp["x-source-line"] == nil {
-		t.Error("expected x-source-line on GET /api/v1/users")
+	// Verify x-source.line present
+	if source, _ := getOp["x-source"].(map[string]any); source == nil || source["line"] == nil {
+		t.Error("expected x-source.line on GET /api/v1/users")
 	}
 
 	responses, ok := getOp["responses"].(map[string]any)
@@ -588,119 +600,6 @@ func TestResponseEntityNested(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Golden-file spec tests — compare full spec output against snapshots
-// =============================================================================
-
 func goldenDir() string {
 	return filepath.Join(testdataDir(), "golden")
-}
-
-func TestGoldenInventoryGenerics(t *testing.T) {
-	dir := filepath.Join(testdataDir(), "java-generics", "com", "example")
-	result, err := javaextract.Extract(javaextract.Config{
-		RootDir:    dir,
-		SourceDirs: []string{dir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := javaextract.GenerateSpec(result, javaextract.SpecConfig{
-		Title:   "Inventory",
-		Version: "1.0",
-	})
-	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "inventory-generics.yaml"), spec,
-		testutil.WithNormalize(testutil.StripSourceLocations))
-}
-
-func TestGoldenJavaInheritance(t *testing.T) {
-	dir := filepath.Join(testdataDir(), "java-inheritance", "com", "example")
-	result, err := javaextract.Extract(javaextract.Config{
-		RootDir:    dir,
-		SourceDirs: []string{dir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := javaextract.GenerateSpec(result, javaextract.SpecConfig{
-		Title:     "Inheritance Test",
-		Version:   "1.0",
-		TreeShake: true,
-	})
-	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "java-inheritance.yaml"), spec,
-		testutil.WithNormalize(testutil.StripSourceLocations))
-}
-
-func TestGoldenJavaEnums(t *testing.T) {
-	dir := filepath.Join(testdataDir(), "java-enums", "com", "example")
-	result, err := javaextract.Extract(javaextract.Config{
-		RootDir:    dir,
-		SourceDirs: []string{dir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := javaextract.GenerateSpec(result, javaextract.SpecConfig{
-		Title:     "Enum Test",
-		Version:   "1.0",
-		TreeShake: true,
-	})
-	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "java-enums.yaml"), spec,
-		testutil.WithNormalize(testutil.StripSourceLocations))
-}
-
-func TestGoldenTSGenerics(t *testing.T) {
-	dir := filepath.Join(testdataDir(), "ts-generics", "src")
-	result, err := tsextract.Extract(tsextract.Config{
-		RootDir:    dir,
-		SourceDirs: []string{dir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := tsextract.GenerateSpec(result, tsextract.SpecConfig{
-		Title:   "TS Generics",
-		Version: "1.0",
-	})
-	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "ts-generics.yaml"), spec,
-		testutil.WithNormalize(testutil.StripSourceLocations))
-}
-
-func TestGoldenJavaUpstreamAccuracy(t *testing.T) {
-	dir := filepath.Join(testdataDir(), "java-upstream", "com", "example")
-	result, err := javaextract.Extract(javaextract.Config{
-		RootDir:    dir,
-		SourceDirs: []string{dir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	authScope, err := authscope.ApplyOptionsFromPath(true, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := javaextract.GenerateSpec(result, javaextract.SpecConfig{
-		Title:     "Upstream Fixture API",
-		Version:   "1.0",
-		AuthScope: authScope,
-	})
-	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "java-upstream.yaml"), spec,
-		testutil.WithNormalize(testutil.StripSourceLocations))
-}
-
-func TestGoldenJavaSpringParams(t *testing.T) {
-	dir := filepath.Join(testdataDir(), "java-spring-params", "com", "example")
-	result, err := javaextract.Extract(javaextract.Config{
-		RootDir:    dir,
-		SourceDirs: []string{dir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := javaextract.GenerateSpec(result, javaextract.SpecConfig{
-		Title:   "Spring Params",
-		Version: "1.0",
-	})
-	testutil.AssertGolden(t, filepath.Join(goldenDir(), "e2e", "java-spring-params.yaml"), spec,
-		testutil.WithNormalize(testutil.StripSourceLocations))
 }

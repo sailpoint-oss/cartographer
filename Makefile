@@ -2,7 +2,7 @@
 # =============================================================================
 # Extraction-only OpenAPI tooling.
 
-.PHONY: help build test extract-go extract-java extract-ts clean
+.PHONY: help build test test-golden-update extract-go extract-java extract-ts clean
 
 .DEFAULT_GOAL := help
 
@@ -32,6 +32,9 @@ build: ## Build the cartographer binary
 
 test: ## Run cartographer unit tests
 	go test ./...
+
+test-golden-update: ## Refresh extract/testdata/golden/e2e snapshots
+	go test ./extract -run TestGoldenSpecs -update -count=1
 
 extract-go: build ## Extract a single Go service (usage: make extract-go ROOT=../svc TITLE="Service")
 	$(TOOL) extract --lang go --root "$(ROOT)" --title "$(TITLE)" --output "$(notdir $(ROOT))-openapi.yaml"

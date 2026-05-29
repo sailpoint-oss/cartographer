@@ -12,32 +12,38 @@ type Location struct {
 	Column int    `json:"column,omitempty"` // 1-based
 }
 
-// EmitExtensions returns x-source-* extensions for embedding in OpenAPI.
-// Only non-zero fields are included.
+const ExtensionKey = "x-source"
+
+// EmitExtensions returns the structured x-source extension for embedding in
+// OpenAPI. Only non-zero fields are included.
 func (l Location) EmitExtensions() map[string]interface{} {
+	source := l.SourceObject()
+	if len(source) == 0 {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{ExtensionKey: source}
+}
+
+// SourceObject returns the object value stored under x-source.
+func (l Location) SourceObject() map[string]interface{} {
 	ext := make(map[string]interface{})
 	if l.File != "" {
-		ext["x-source-file"] = l.File
+		ext["file"] = l.File
 	}
 	if l.Line > 0 {
-		ext["x-source-line"] = l.Line
+		ext["line"] = l.Line
 	}
 	if l.Column > 0 {
-		ext["x-source-column"] = l.Column
+		ext["column"] = l.Column
 	}
 	return ext
 }
 
-// ApplyTo merges x-source-* extensions into the given map.
+// ApplyTo merges the structured x-source extension into the given map.
 func (l Location) ApplyTo(m map[string]interface{}) {
-	if l.File != "" {
-		m["x-source-file"] = l.File
-	}
-	if l.Line > 0 {
-		m["x-source-line"] = l.Line
-	}
-	if l.Column > 0 {
-		m["x-source-column"] = l.Column
+	source := l.SourceObject()
+	if len(source) > 0 {
+		m[ExtensionKey] = source
 	}
 }
 

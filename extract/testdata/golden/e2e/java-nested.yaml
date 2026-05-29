@@ -1,0 +1,57 @@
+components:
+    schemas:
+        OuterDTO:
+            properties:
+                category:
+                    enum:
+                        - HIGH
+                        - MEDIUM
+                        - LOW
+                    type: string
+                config:
+                    properties:
+                        key:
+                            type: string
+                        value:
+                            type: string
+                    type: object
+                id:
+                    type: string
+                operator:
+                    enum:
+                        - AND
+                        - OR
+                        - NOT
+                    type: string
+            type: object
+info:
+    title: Java Nested
+    version: "1.0"
+openapi: 3.0.3
+paths:
+    /api/v1/nested/{id}:
+        get:
+            description: Retrieve a single Nested by its unique identifier.
+            operationId: get
+            parameters:
+                - description: The unique identifier of the resource.
+                  example: 550e8400-e29b-41d4-a716-446655440000
+                  in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+                  style: simple
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/OuterDTO'
+                    description: Nested
+            summary: Get Nested
+            tags:
+                - Nested
+tags:
+    - description: Operations related to Nested
+      name: Nested

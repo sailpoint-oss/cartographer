@@ -1,0 +1,119 @@
+# Generic vocabulary that the bloom filter would otherwise flag. ONLY include
+# universally-known generic identifiers here; never include real internal terms
+# that happen to collide with the denylist (use the master list to remove them
+# instead).
+#
+# One token per line; '#' begins a comment; case-insensitive.
+
+# OpenAPI string format keywords with the "idn-" prefix (RFC 5890 internationalized
+# domain names) which is generic vocabulary, not related to any internal namespace.
+idn-email
+idn-hostname
+
+# Common English compounds that may collide with internal slugs at the
+# letter-stream level.
+identity
+identifier
+identification
+
+# Generic 3-4 letter tokens whose bloom-hash MAY collide with internal slugs
+# at low FP rate. Listed here so a scan over a large repo never noises on
+# these universally-known words.
+api
+www
+git
+tar
+gzip
+zip
+web
+url
+uri
+url-encoded
+add
+set
+get
+put
+del
+not
+new
+old
+log
+err
+end
+src
+dst
+arg
+env
+ext
+bin
+out
+key
+val
+ref
+sub
+sup
+sum
+abs
+min
+max
+str
+int
+num
+bit
+all
+any
+one
+two
+six
+ten
+yes
+crc
+md5
+sha
+rsa
+aes
+ssl
+tls
+ssh
+ftp
+udp
+tcp
+ip6
+ip4
+dns
+xml
+csv
+yml
+ini
+deb
+rpm
+exe
+dll
+ssh
+arc
+aer
+apo
+alis
+ams
+action
+section
+function
+package
+module
+service
+client
+server
+common
+internal
+external
+public
+private
+admin
+agent
+config
+default
+options
+runtime
+extension
+example
+sample

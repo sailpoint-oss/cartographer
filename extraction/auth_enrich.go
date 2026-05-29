@@ -2,13 +2,7 @@ package extraction
 
 import (
 	"github.com/sailpoint-oss/cartographer/extract/authscope"
-	"github.com/sailpoint-oss/cartographer/extract/extractionopts"
 )
-
-// AuthApplyOptions builds authscope options from extraction settings.
-func AuthApplyOptions(opts extractionopts.Options) (authscope.ApplyOptions, error) {
-	return authscope.ApplyOptionsFromPath(opts.EnableAuthScopeTranslation, opts.AMSMappingPath)
-}
 
 // ToAnySpecMap converts a string-interface{} spec map for authscope helpers.
 func ToAnySpecMap(spec map[string]interface{}) map[string]any {
@@ -22,16 +16,17 @@ func ToAnySpecMap(spec map[string]interface{}) map[string]any {
 	return out
 }
 
-// ApplyAuthScopeTranslation enriches a generated spec with rights extensions and PAT scopes.
-func ApplyAuthScopeTranslation(specMap map[string]any, opts extractionopts.Options, classifyExisting bool) error {
-	ao, err := AuthApplyOptions(opts)
-	if err != nil {
-		return err
-	}
-	if !ao.Enabled {
+// ApplyAuthScopeTranslation walks every operation in the generated spec
+// and ensures `components.securitySchemes.oauth2` declares every scope
+// observed on any operation's security block.
+//
+// Cartographer does NOT translate extracted tokens into any other shape
+// (no right→scope mapping, no consumer JSON load). Downstream tooling
+// owns that translation — see meridian/overlay for the reference flow.
+func ApplyAuthScopeTranslation(specMap map[string]any) error {
+	if specMap == nil {
 		return nil
 	}
-	st := authscope.EnrichSpec(specMap, ao, classifyExisting)
-	authscope.MergeDiagnostics(specMap, st)
+	_ = authscope.EnrichSpec(specMap)
 	return nil
 }

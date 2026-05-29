@@ -57,7 +57,7 @@ func (ea *EventAnalyzer) AnalyzeFile(file *ast.File, info *types.Info, filePath 
 // collectTopicConstants scans for topic constant declarations.
 // Patterns:
 //   - const TopicName TopicDescriptor = "topic-name"
-//   - var TopicResourceGroup = events.Topic("resource-group-v1")
+//   - var TopicWidget = events.Topic("widget-events-v1")
 func (ea *EventAnalyzer) collectTopicConstants(file *ast.File, info *types.Info) {
 	for _, decl := range file.Decls {
 		genDecl, ok := decl.(*ast.GenDecl)

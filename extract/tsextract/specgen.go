@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/index"
 	"github.com/sailpoint-oss/cartographer/extract/sharedspec"
 	"github.com/sailpoint-oss/cartographer/extract/specmodel"
@@ -19,7 +18,6 @@ type SpecConfig struct {
 	ServiceTemplate string
 	TreeShake       bool
 	ErrorSchema     string
-	AuthScope       authscope.ApplyOptions
 }
 
 // GenerateSpec converts TypeScript extraction results into a complete OpenAPI spec.
@@ -34,7 +32,6 @@ func GenerateSpec(result *Result, cfg SpecConfig) map[string]any {
 		ServiceTemplate: cfg.ServiceTemplate,
 		TreeShake:       cfg.TreeShake,
 		ErrorSchema:     cfg.ErrorSchema,
-		AuthScope:       cfg.AuthScope,
 	}, adapter)
 }
 
@@ -153,11 +150,19 @@ func (a *tsAdapter) FindTypeBySimpleName(types map[string]*index.TypeDecl, name 
 	return nil
 }
 
-func (a *tsAdapter) IsFileType(_ string) bool {
-	return false // TS doesn't have file upload types like Java
+func (a *tsAdapter) IsFileType(typeName string) bool {
+	switch strings.ToLower(strings.TrimSpace(typeName)) {
+	case "file", "files", "express.multer.file", "express.multer.file[]":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *tsAdapter) FormParamSchema(typeName string) map[string]any {
+	if a.IsFileType(typeName) {
+		return map[string]any{"type": "string", "format": "binary"}
+	}
 	return a.ParamTypeToSchema(typeName)
 }
 

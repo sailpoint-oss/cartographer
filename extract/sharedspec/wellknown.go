@@ -100,7 +100,7 @@ var WellKnownParamDescriptions = map[string]WellKnownParamInfo{
 	},
 	"id": {
 		Description: "The unique identifier of the resource.",
-		Example:     "2c91808a7813090a017814121919ecca",
+		Example:     "550e8400-e29b-41d4-a716-446655440000",
 	},
 	"query": {
 		Description: "Free-text search query.",

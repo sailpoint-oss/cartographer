@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sailpoint-oss/cartographer/extract/authscope"
 	"github.com/sailpoint-oss/cartographer/extract/extractionopts"
 	"github.com/sailpoint-oss/cartographer/extract/index"
 	"github.com/sailpoint-oss/cartographer/extract/parser"
@@ -69,21 +70,21 @@ type Operation struct {
 	DeprecatedSince        string
 	Hidden                 bool
 	Security               []string // legacy combined; prefer Rights and OAuthScopes
-	Rights                 []string // @RequireRight, @PreAuthorize, @Secured, etc.
+	Rights                 []string // @PreAuthorize, @Secured, @RolesAllowed etc.
 	OAuthScopes            []string // @SecurityRequirement scopes only
 	ConsumesContentType    string   // from @Consumes or consumes= attribute
 	ProducesContentType    string   // from @Produces or produces= attribute
 	ReturnDescription      string
-	ErrorResponses         map[int]string                // status code -> description from @throws
-	ErrorResponseSchemas   []ErrorResponseSchemaEntry    // typed error bodies from advice/handlers
-	AnnotatedResponses     []AnnotatedResponse           // from @ApiResponse annotations
-	ResponseHeaders        map[string]string   // header name -> description (e.g. X-Total-Count)
-	NullableResponse       bool                // from @Nullable or Optional<T> return
-	RateLimited            bool                // from @Metered, @Timed, @RateLimited
-	FormParams             []*Parameter        // from @FormParam (JAX-RS form parameters)
-	File                   string              // source file path
-	Line                   int                 // 1-based line number
-	Column                 int                 // 1-based column number
+	ErrorResponses         map[int]string             // status code -> description from @throws
+	ErrorResponseSchemas   []ErrorResponseSchemaEntry // typed error bodies from advice/handlers
+	AnnotatedResponses     []AnnotatedResponse        // from @ApiResponse annotations
+	ResponseHeaders        map[string]string          // header name -> description (e.g. X-Total-Count)
+	NullableResponse       bool                       // from @Nullable or Optional<T> return
+	RateLimited            bool                       // from @Metered, @Timed, @RateLimited
+	FormParams             []*Parameter               // from @FormParam (JAX-RS form parameters)
+	File                   string                     // source file path
+	Line                   int                        // 1-based line number
+	Column                 int                        // 1-based column number
 }
 
 // Parameter represents an API parameter.
@@ -111,17 +112,17 @@ type Parameter struct {
 
 // extractContext holds shared state for the extraction pass.
 type extractContext struct {
-	constants         map[string]string // Java constant name -> resolved string value
-	classPaths        map[string]string // class simple name -> @RequestMapping/@Path base path
-	idx               *index.Index
-	verbose           bool
-	exceptionHandlers       map[string]int    // exception class name -> HTTP status code (from @ControllerAdvice / ExceptionMapper)
-	exceptionHandlerSchemas map[string]string // exception class name -> response schema type
-	methodBodies            map[string]map[string]string
+	constants                map[string]string // Java constant name -> resolved string value
+	classPaths               map[string]string // class simple name -> @RequestMapping/@Path base path
+	idx                      *index.Index
+	verbose                  bool
+	exceptionHandlers        map[string]int    // exception class name -> HTTP status code (from @ControllerAdvice / ExceptionMapper)
+	exceptionHandlerSchemas  map[string]string // exception class name -> response schema type
+	methodBodies             map[string]map[string]string
 	signaturePaginationTypes map[string]bool
 
-	controllerCount          int
-	unmappedHandlerMethods   int
+	controllerCount        int
+	unmappedHandlerMethods int
 
 	// Plugin-registered JAX-RS applications.
 	// appBasePaths maps an Application class simple name to the context path registered
@@ -166,8 +167,8 @@ func Extract(cfg Config) (*Result, error) {
 		methodBodies:             make(map[string]map[string]string),
 		signaturePaginationTypes: cfg.Extraction.SignaturePaginationSet(),
 		appBasePaths:             make(map[string][]string),
-		addedBy:           make(map[string][]string),
-		resourceBasePaths: make(map[string][]string),
+		addedBy:                  make(map[string][]string),
+		resourceBasePaths:        make(map[string][]string),
 	}
 	for _, dir := range dirs {
 		buildConstantTable(pool, dir, ctx)
@@ -220,12 +221,12 @@ func Extract(cfg Config) (*Result, error) {
 // buildConstantTable walks Java files to collect static final String constants
 // and class-level @RequestMapping/@Path base paths.
 func buildConstantTable(pool *parser.Pool, rootDir string, ctx *extractContext) {
-	filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+	filepath.WalkDir(rootDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() {
-			base := info.Name()
+		if entry.IsDir() {
+			base := entry.Name()
 			if base == "node_modules" || base == ".git" || base == "build" || base == "target" || base == "test" {
 				return filepath.SkipDir
 			}
@@ -244,9 +245,9 @@ func buildConstantTable(pool *parser.Pool, rootDir string, ctx *extractContext) 
 		if err != nil {
 			return nil
 		}
-		defer tree.Close()
 
 		func() {
+			defer tree.Close()
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(os.Stderr, "WARN: panic in constant scan of %s: %v\n", path, r)
@@ -415,12 +416,12 @@ func resolveSubResourceLocators(pool *parser.Pool, dirs []string, ctx *extractCo
 	for changed {
 		changed = false
 		for _, dir := range dirs {
-			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
 				if err != nil {
 					return nil
 				}
-				if info.IsDir() {
-					base := info.Name()
+				if entry.IsDir() {
+					base := entry.Name()
 					if base == "node_modules" || base == ".git" || base == "build" || base == "target" || base == "test" {
 						return filepath.SkipDir
 					}
@@ -437,8 +438,9 @@ func resolveSubResourceLocators(pool *parser.Pool, dirs []string, ctx *extractCo
 				if err != nil {
 					return nil
 				}
-				defer tree.Close()
-				if collectFileSubResourceLocators(tree.RootNode(), source, ctx) {
+				changedForFile := collectFileSubResourceLocators(tree.RootNode(), source, ctx)
+				tree.Close()
+				if changedForFile {
 					changed = true
 				}
 				return nil
@@ -804,12 +806,12 @@ func resolveAnnotationValue(raw string, constants map[string]string) string {
 func extractOperations(pool *parser.Pool, ctx *extractContext, rootDir string) ([]*Operation, error) {
 	var ops []*Operation
 
-	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(rootDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() {
-			base := info.Name()
+		if entry.IsDir() {
+			base := entry.Name()
 			if base == "node_modules" || base == ".git" || base == "build" || base == "target" || base == "test" {
 				return filepath.SkipDir
 			}
@@ -828,9 +830,9 @@ func extractOperations(pool *parser.Pool, ctx *extractContext, rootDir string) (
 		if err != nil {
 			return nil
 		}
-		defer tree.Close()
 
 		func() {
+			defer tree.Close()
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(os.Stderr, "WARN: panic extracting operations from %s: %v\n", path, r)
@@ -877,8 +879,8 @@ func indexMethodBodiesInDir(pool *parser.Pool, dir string, ctx *extractContext) 
 		if err != nil {
 			return nil
 		}
-		defer tree.Close()
 		indexMethodBodiesInUnit(tree.RootNode(), source, ctx)
+		tree.Close()
 		return nil
 	})
 }
@@ -1254,10 +1256,10 @@ func analyzeClassAnnotations(classNode *tree_sitter.Node, source []byte, constan
 				classSecurity = append(classSecurity, parsePreAuthorize(annArgs, constants)...)
 			case "Secured":
 				classSecurity = append(classSecurity, parseSecuredAnnotation(annArgs)...)
-			case "RequireRight":
-				classSecurity = append(classSecurity, parseRequireRight(annArgs, constants)...)
 			case "RolesAllowed":
 				classSecurity = append(classSecurity, parseSecuredAnnotation(annArgs)...)
+			case "RequireRight", "RequireGroup", "RequiresPermissions", "RequiresRoles":
+				classSecurity = append(classSecurity, parseStringAnnotationTokens(annArgs, constants)...)
 			}
 		}
 	}
@@ -1435,18 +1437,21 @@ func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePat
 					oauthScopes = append(oauthScopes, parseSecurityRequirement(annArgs)...)
 				}
 
-				// @PreAuthorize / @Secured / @RequireRight / @RolesAllowed — AMS rights
+				// @PreAuthorize / @Secured / @RolesAllowed — service-side
+				// auth requirements. Cartographer surfaces every extracted
+				// token verbatim as an OAuth2 scope; downstream tooling
+				// translates whatever needs translating.
 				if annName == "PreAuthorize" {
 					rights = append(rights, parsePreAuthorize(annArgs, ctx.constants)...)
 				}
 				if annName == "Secured" {
 					rights = append(rights, parseSecuredAnnotation(annArgs)...)
 				}
-				if annName == "RequireRight" {
-					rights = append(rights, parseRequireRight(annArgs, ctx.constants)...)
-				}
 				if annName == "RolesAllowed" {
 					rights = append(rights, parseSecuredAnnotation(annArgs)...)
+				}
+				if annName == "RequireRight" || annName == "RequireGroup" || annName == "RequiresPermissions" || annName == "RequiresRoles" {
+					rights = append(rights, parseStringAnnotationTokens(annArgs, ctx.constants)...)
 				}
 
 				// Improvement #14: @Metered / @Timed / @RateLimited → x-rate-limited
@@ -1538,6 +1543,9 @@ func extractMethodOperation(methodNode *tree_sitter.Node, source []byte, basePat
 	for _, p := range params {
 		if p.In == "body" {
 			requestBodyType = p.Type
+			if consumesContentType == "" && isJsonPatchType(requestBodyType) {
+				consumesContentType = "application/json-patch+json"
+			}
 			// Improvement #19: Request body description from @param JavaDoc
 			if requestBodyDescription == "" {
 				if desc, ok := jdoc.Params[p.Name]; ok {
@@ -1793,6 +1801,15 @@ var reHasAnyAuthority = regexp.MustCompile(`hasAnyAuthority\(\s*(.+?)\s*\)`)
 var reHasAnyRole = regexp.MustCompile(`hasAnyRole\(\s*(.+?)\s*\)`)
 var reTClassConstant = regexp.MustCompile(`T\(\w+\)\.(\w+)`)
 
+// springHasRoleToken maps hasRole('ADMIN') to ROLE_ADMIN and hasRole('api:…') to structured rights.
+func springHasRoleToken(role string) string {
+	role = strings.TrimSpace(role)
+	if authscope.IsColonDelimitedAuthID(role) {
+		return role
+	}
+	return "ROLE_" + role
+}
+
 // parsePreAuthorize parses @PreAuthorize("hasAuthority('api:resource:read')") etc.
 func parsePreAuthorize(args string, constants map[string]string) []string {
 	args = strings.TrimPrefix(args, "(")
@@ -1804,7 +1821,7 @@ func parsePreAuthorize(args string, constants map[string]string) []string {
 		scopes = append(scopes, m[1])
 	}
 	for _, m := range reHasRole.FindAllStringSubmatch(raw, -1) {
-		scopes = append(scopes, "ROLE_"+m[1])
+		scopes = append(scopes, springHasRoleToken(m[1]))
 	}
 	if matches := reHasAnyAuthority.FindStringSubmatch(raw); len(matches) > 1 {
 		for _, part := range strings.Split(matches[1], ",") {
@@ -1820,7 +1837,7 @@ func parsePreAuthorize(args string, constants map[string]string) []string {
 			part = strings.TrimSpace(part)
 			part = strings.Trim(part, "'\"")
 			if part != "" {
-				scopes = append(scopes, "ROLE_"+part)
+				scopes = append(scopes, springHasRoleToken(part))
 			}
 		}
 	}
@@ -1856,44 +1873,41 @@ func parseSecuredAnnotation(args string) []string {
 	return roles
 }
 
-// parseRequireRight parses @RequireRight("api:scope:read") or @RequireRight({"a", "b"}) or @RequireRight(Right.READ).
-func parseRequireRight(args string, constants map[string]string) []string {
+func parseStringAnnotationTokens(args string, constants map[string]string) []string {
 	args = strings.TrimPrefix(args, "(")
 	args = strings.TrimSuffix(args, ")")
 	args = strings.TrimSpace(args)
-
-	// Strip outer { } for array form
-	inner := strings.TrimPrefix(args, "{")
-	inner = strings.TrimSuffix(inner, "}")
-
-	var rights []string
-	for _, part := range strings.Split(inner, ",") {
+	args = strings.TrimPrefix(args, "{")
+	args = strings.TrimSuffix(args, "}")
+	var tokens []string
+	for _, part := range splitAnnotationArgs(args) {
 		part = strings.TrimSpace(part)
-		stripped := stripJavaQuotes(part)
-		if stripped != part && stripped != "" {
-			// Was a quoted string literal
-			rights = append(rights, stripped)
-		} else if part != "" {
-			// Try constant resolution (e.g. Right.READ or just READ)
-			if constants != nil {
-				if val, ok := constants[part]; ok {
-					rights = append(rights, val)
-					continue
-				}
-				// Try just the identifier after the dot
-				if dotIdx := strings.LastIndex(part, "."); dotIdx >= 0 {
-					shortName := part[dotIdx+1:]
-					if val, ok := constants[shortName]; ok {
-						rights = append(rights, val)
-						continue
+		if idx := strings.Index(part, "="); idx >= 0 {
+			part = strings.TrimSpace(part[idx+1:])
+		}
+		part = strings.TrimPrefix(part, "{")
+		part = strings.TrimSuffix(part, "}")
+		for _, nested := range strings.Split(part, ",") {
+			nested = strings.TrimSpace(nested)
+			if nested == "" {
+				continue
+			}
+			value := stripJavaQuotes(nested)
+			if value == nested && constants != nil {
+				if resolved, ok := constants[value]; ok {
+					value = resolved
+				} else if dot := strings.LastIndex(value, "."); dot >= 0 {
+					if resolved, ok := constants[value[dot+1:]]; ok {
+						value = resolved
 					}
 				}
 			}
-			// Use as-is if no constant found
-			rights = append(rights, part)
+			if value != "" {
+				tokens = append(tokens, value)
+			}
 		}
 	}
-	return rights
+	return tokens
 }
 
 // splitAnnotationArgs splits annotation arguments by top-level commas, respecting nesting.
@@ -2081,6 +2095,7 @@ func getExceptionDescription(exName string, code int) string {
 
 // extractResponseEntityType tries to infer the response entity type from method body text.
 func extractResponseEntityType(bodyText string) string {
+	localTypes := extractLocalVariableTypes(bodyText)
 	// Look for patterns like:
 	//   Response.ok(variable).build()
 	//   okResponse(variable)
@@ -2116,9 +2131,30 @@ func extractResponseEntityType(bodyText string) string {
 				}
 				return strings.TrimSpace(typeName)
 			}
+			if typ := localTypes[arg]; typ != "" {
+				return typ
+			}
 		}
 	}
 	return ""
+}
+
+func extractLocalVariableTypes(bodyText string) map[string]string {
+	out := make(map[string]string)
+	re := regexp.MustCompile(`(?m)(?:final\s+)?([A-Z][A-Za-z0-9_]*(?:\s*<[^;=]+>)?(?:\[\])?)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=`)
+	for _, m := range re.FindAllStringSubmatch(bodyText, -1) {
+		out[m[2]] = strings.ReplaceAll(strings.TrimSpace(m[1]), " ", "")
+	}
+	varRe := regexp.MustCompile(`(?m)(?:final\s+)?var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*new\s+([A-Z][A-Za-z0-9_]*(?:\s*<[^;=]+>)?)\s*\(`)
+	for _, m := range varRe.FindAllStringSubmatch(bodyText, -1) {
+		out[m[1]] = strings.ReplaceAll(strings.TrimSpace(m[2]), " ", "")
+	}
+	return out
+}
+
+func isJsonPatchType(typeName string) bool {
+	typeName = strings.ToLower(strings.TrimSpace(typeName))
+	return strings.Contains(typeName, "jsonpatch")
 }
 
 // extractResponseStatusAnnotation checks for @ResponseStatus on a method.
@@ -2691,7 +2727,17 @@ func joinPaths(base, sub string) string {
 	if sub == "" {
 		return base
 	}
-	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(sub, "/")
+	base = strings.TrimRight(base, "/")
+	sub = strings.TrimLeft(sub, "/")
+	baseParts := strings.Split(strings.Trim(base, "/"), "/")
+	subParts := strings.Split(sub, "/")
+	if len(baseParts) > 0 && len(subParts) > 0 && baseParts[len(baseParts)-1] == subParts[0] {
+		sub = strings.Join(subParts[1:], "/")
+		if sub == "" {
+			return base
+		}
+	}
+	return base + "/" + sub
 }
 
 // =============================================================================

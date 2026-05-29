@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 )
 
 // AnalyzeMuxPathMethodHandler detects gorilla/mux registrations such as:
@@ -75,10 +76,16 @@ func (ra *RouterAnalyzer) AnalyzeMuxPathMethodHandler(call *ast.CallExpr, file *
 		}
 	}
 
+	route.Path = collapseSlashes(route.Path)
+
 	return route
 }
 
 // isBuildRoutesMethod reports whether a function is a RestEndpoint.BuildRoutes implementation.
 func isBuildRoutesMethod(fn *ast.FuncDecl) bool {
-	return fn != nil && fn.Name != nil && fn.Name.Name == "BuildRoutes"
+	if fn == nil || fn.Name == nil {
+		return false
+	}
+	name := fn.Name.Name
+	return name == "BuildRoutes" || strings.HasPrefix(name, "BuildRoutes")
 }

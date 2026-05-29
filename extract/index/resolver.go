@@ -158,6 +158,7 @@ func (idx *Index) classToSchema(decl *TypeDecl, visited map[string]bool) map[str
 		if field.Deprecated {
 			fieldSchema["deprecated"] = true
 		}
+		sourceloc.Location{File: decl.SourceFile, Line: field.Line, Column: field.Column}.ApplyTo(fieldSchema)
 
 		jsonName := field.JSONName
 		if jsonName == "" {
@@ -273,6 +274,7 @@ func (idx *Index) buildOwnFieldsSchema(decl *TypeDecl, visited map[string]bool) 
 		if field.Deprecated {
 			fieldSchema["deprecated"] = true
 		}
+		sourceloc.Location{File: decl.SourceFile, Line: field.Line, Column: field.Column}.ApplyTo(fieldSchema)
 
 		properties[jsonName] = fieldSchema
 		if field.Required {
@@ -549,6 +551,23 @@ func (idx *Index) fieldTypeToSchema(typeName string, visited map[string]bool) ma
 		return idx.fieldTypeToSchema(inner, visited)
 	}
 
+	// Java functional interfaces (java.util.function.*) are behavior, not
+	// serializable DTOs. Supplier<T>/Callable<T> serialize as the value they
+	// produce (T); the rest have no meaningful JSON shape and must not leak a
+	// bracketed $ref placeholder.
+	if base, hasGeneric := genericBaseName(typeName); hasGeneric {
+		switch base {
+		case "Supplier", "Callable", "Future", "CompletableFuture":
+			if args := splitGenericArgs(extractGenericInner(typeName)); len(args) > 0 && args[0] != "" {
+				return idx.fieldTypeToSchema(args[0], visited)
+			}
+			return map[string]any{"type": "object"}
+		case "Function", "BiFunction", "Consumer", "BiConsumer", "Predicate",
+			"BiPredicate", "UnaryOperator", "BinaryOperator", "Comparator":
+			return map[string]any{"type": "object"}
+		}
+	}
+
 	// Try to resolve from the index
 	if decl, ok := idx.types[typeName]; ok {
 		return idx.ToOpenAPISchema(decl, visited)
@@ -558,8 +577,41 @@ func (idx *Index) fieldTypeToSchema(typeName string, visited map[string]bool) ma
 		return idx.ToOpenAPISchema(decl, visited)
 	}
 
-	// Unknown type - return a $ref placeholder
-	return map[string]any{"$ref": "#/components/schemas/" + typeName}
+	// Unknown type - return a $ref placeholder. Never emit an invalid
+	// component name: a bracketed name (unresolved generic) would produce an
+	// invalid JSON pointer that breaks ref resolution for the whole document.
+	return map[string]any{"$ref": "#/components/schemas/" + sanitizeRefComponentName(typeName)}
+}
+
+// genericBaseName returns the base type name preceding the first '<' and
+// whether the type carried generic parameters.
+func genericBaseName(typeName string) (string, bool) {
+	if i := strings.Index(typeName, "<"); i > 0 {
+		return strings.TrimSpace(typeName[:i]), true
+	}
+	return typeName, false
+}
+
+// sanitizeRefComponentName strips characters that are invalid in an OpenAPI
+// component name (and unescaped in a JSON pointer). Mirrors
+// sharedspec.sanitizeSchemaName so a $ref produced here and the component the
+// shared layer ultimately stubs use the same key.
+func sanitizeRefComponentName(name string) string {
+	if !strings.ContainsAny(name, "<>,?[](){}&| \t\n") {
+		return name
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch r {
+		case '<', '>', ',', '?', '[', ']', '(', ')', '{', '}', '&', '|', ' ', '\t', '\n':
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "Object"
+	}
+	return b.String()
 }
 
 // Resolver resolves a type reference to an OpenAPI schema. Convenience wrapper.

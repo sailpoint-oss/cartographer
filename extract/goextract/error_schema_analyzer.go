@@ -213,108 +213,33 @@ func (esa *ErrorSchemaAnalyzer) GetErrorSchema() *EnhancedErrorSchema {
 	return esa.errorSchemas["web.Error"]
 }
 
-// BuildEnhancedErrorSpec builds an enhanced OpenAPI schema spec with const values.
+// BuildEnhancedErrorSpec builds the OpenAPI schema for the framework's error
+// shape. Cartographer no longer hard-codes a vendor envelope; it emits a
+// stub-marked placeholder, and a downstream overlay (e.g. meridian's
+// stubcatalog) resolves "LegacyErrorResponse" into the concrete shape.
 func (esa *ErrorSchemaAnalyzer) BuildEnhancedErrorSpec() map[string]interface{} {
-	schema := esa.GetErrorSchema()
-	if schema == nil {
-		// Return basic schema if analysis failed
-		return esa.buildBasicErrorSchema()
-	}
-
-	// Build the Error schema
-	errorSchema := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"detailCode": map[string]interface{}{
-				"type":        "string",
-				"description": "HTTP status text (e.g., 'Bad Request', 'Internal Server Error')",
-				"example":     "Internal Server Error",
-			},
-			"trackingId": map[string]interface{}{
-				"type":        "string",
-				"description": "Unique identifier for tracing the request",
-				"example":     "12345-67890-abcde-fghij",
-			},
-			"messages": map[string]interface{}{
-				"type":        "array",
-				"description": "Array of localized error messages",
-				"items":       esa.buildMessageSchema(schema),
-			},
-		},
-		"required": []string{"detailCode", "messages"},
-	}
-
-	return errorSchema
+	return esa.buildBasicErrorSchema()
 }
 
-// buildMessageSchema builds the ErrorMessage schema with const values from analysis.
-func (esa *ErrorSchemaAnalyzer) buildMessageSchema(errorSchema *EnhancedErrorSchema) map[string]interface{} {
-	messageSchema, hasNested := errorSchema.NestedSchemas["messages"]
-
-	properties := map[string]interface{}{
-		"locale": map[string]interface{}{
-			"type":        "string",
-			"description": "Locale of the message",
-		},
-		"localeOrigin": map[string]interface{}{
-			"type":        "string",
-			"description": "Origin of the locale",
-		},
-		"text": map[string]interface{}{
-			"type":        "string",
-			"description": "The error message text",
-		},
-	}
-
-	// Add const values if we extracted them
-	if hasNested && messageSchema != nil {
-		if locale, ok := messageSchema.ConstantFields["locale"].(string); ok {
-			properties["locale"].(map[string]interface{})["const"] = locale
-			properties["locale"].(map[string]interface{})["default"] = locale
-		}
-		if localeOrigin, ok := messageSchema.ConstantFields["localeOrigin"].(string); ok {
-			properties["localeOrigin"].(map[string]interface{})["const"] = localeOrigin
-			properties["localeOrigin"].(map[string]interface{})["default"] = localeOrigin
-		}
-	}
-
-	return map[string]interface{}{
-		"type":       "object",
-		"properties": properties,
-		"required":   []string{"locale", "text"},
-	}
-}
-
-// buildBasicErrorSchema builds a basic error schema without const values.
+// buildBasicErrorSchema builds the placeholder shape cartographer emits when
+// it cannot describe the framework's error envelope generically.
 func (esa *ErrorSchemaAnalyzer) buildBasicErrorSchema() map[string]interface{} {
 	return map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"detailCode": map[string]interface{}{
-				"type":        "string",
-				"description": "Error detail code",
-			},
-			"trackingId": map[string]interface{}{
-				"type":        "string",
-				"description": "Request tracking ID",
-			},
-			"messages": map[string]interface{}{
-				"type": "array",
-				"items": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"locale": map[string]interface{}{
-							"type": "string",
-						},
-						"localeOrigin": map[string]interface{}{
-							"type": "string",
-						},
-						"text": map[string]interface{}{
-							"type": "string",
-						},
-					},
-				},
-			},
-		},
+		"type":        "object",
+		"description": "Error response (resolved by consumer overlay if a catalog is configured)",
+		"x-source":    map[string]interface{}{"stubName": "LegacyErrorResponse"},
+	}
+}
+
+// buildMessageSchema is retained for compatibility with existing callers
+// that may expect it on the analyzer surface. It now returns the same
+// neutral placeholder as buildBasicErrorSchema.
+//
+//nolint:unused // referenced for back-compat; safe to remove once callers migrate.
+func (esa *ErrorSchemaAnalyzer) buildMessageSchema(*EnhancedErrorSchema) map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "object",
+		"description": "Error message (resolved by consumer overlay if a catalog is configured)",
+		"x-source":    map[string]interface{}{"stubName": "LegacyErrorMessage"},
 	}
 }

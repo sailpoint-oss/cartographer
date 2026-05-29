@@ -27,21 +27,12 @@ components:
             flows:
                 clientCredentials:
                     scopes:
-                        example:resource:read: Read example resources
-                    tokenUrl: https://{tenant}.api.example.com/oauth/token
+                        example:resource:read: Read resource resources
+                    tokenUrl: /oauth/token
             type: oauth2
 info:
     title: Upstream Fixture API
     version: "1.0"
-    x-cartographer-diagnostics:
-        auth:
-            operationsWithRights: 1
-            operationsWithScopes: 1
-            operationsWithUnmappedRights: 0
-            unmappedRightsSample: []
-        controllers: 6
-        operations: 7
-        unmappedHandlerMethods: 0
 openapi: 3.0.3
 paths:
     /api/v1/catalog/items:
@@ -105,10 +96,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                properties:
-                                    id:
-                                        type: string
-                                type: object
+                                $ref: '#/components/schemas/OrderDto'
                     description: Order created
             summary: Create Order
             tags:
@@ -132,8 +120,6 @@ paths:
             summary: List Entries
             tags:
                 - Scoped
-            x-sailpoint-required-rights:
-                - example:resource:read
     /api/v1/widgets:
         post:
             description: Create a new Widget.
@@ -154,10 +140,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                properties:
-                                    id:
-                                        type: string
-                                type: object
+                                $ref: '#/components/schemas/WidgetDto'
                     description: Widget created
             summary: Create Widget
             tags:
@@ -168,7 +151,7 @@ paths:
             operationId: get
             parameters:
                 - description: The unique identifier of the resource.
-                  example: 2c91808a7813090a017814121919ecca
+                  example: 550e8400-e29b-41d4-a716-446655440000
                   in: path
                   name: id
                   required: true
@@ -180,10 +163,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                properties:
-                                    id:
-                                        type: string
-                                type: object
+                                $ref: '#/components/schemas/WidgetDto'
                     description: Widget
                 "404":
                     content:

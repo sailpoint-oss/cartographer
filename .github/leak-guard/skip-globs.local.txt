@@ -1,0 +1,2 @@
+# Local skip-globs additions. Not overwritten on regen.
+# One glob per line; # begins a comment.

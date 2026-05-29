@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#
+# leak-guard pre-push hook. Runs the same check as PR CI against the diff
+# being pushed and aborts on any hit. Install with:
+#
+#   ./scripts/install-leak-guard-hooks.sh
+#
+# (which sets `git config core.hooksPath .github/leak-guard/hooks`).
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+guard_dir="$repo_root/.github/leak-guard"
+
+if [ ! -d "$guard_dir" ]; then
+  exit 0
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "leak-guard: go is not installed; install Go or skip this hook with HOOKS_BYPASS=1"
+  if [ "${HOOKS_BYPASS:-0}" = "1" ]; then
+    exit 0
+  fi
+  exit 1
+fi
+
+(
+  cd "$guard_dir/check"
+  go run . \
+    -bloom "$guard_dir/bloom.bin" \
+    -salt "$guard_dir/salt.bin" \
+    -patterns "$guard_dir/patterns.yaml" \
+    -allow "$guard_dir/allow.txt" \
+    -skip "$guard_dir/skip-globs.txt" \
+    -skip-local "$guard_dir/skip-globs.local.txt" \
+    -root "$repo_root" \
+    -verbose
+)

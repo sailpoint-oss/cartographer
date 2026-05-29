@@ -1,3 +1,10 @@
+// Package authscope shapes extracted auth requirements into the standard
+// OpenAPI security block. Cartographer surfaces whatever strings it found
+// in source AS OAuth2 scopes; downstream consumers decide whether any of
+// those strings are actually rights or permissions that need translation.
+//
+// There is no consumer-supplied mapping JSON, no right→scope translation,
+// and no vendor-flavoured x-* extensions emitted by this package.
 package authscope
 
 import (
@@ -5,123 +12,114 @@ import (
 	"strings"
 )
 
-const (
-	ExtRequiredRights    = "x-sailpoint-required-rights"
-	ExtUnmappedRights    = "x-sailpoint-auth-unmapped-rights"
-	ExtAuthDiagnostics   = "x-sailpoint-auth-diagnostics"
-	schemeOAuth2         = "oauth2"
-)
+// SchemeOAuth2 is the security-scheme name Cartographer uses when emitting
+// auth requirements. Downstream tooling can rename or augment it freely.
+const SchemeOAuth2 = "oauth2"
 
-// ApplyOptions configures spec enrichment.
-type ApplyOptions struct {
-	Enabled bool
-	Mapping *Mapping
-}
+// DefaultTokenURL is the fictional token URL Cartographer puts on the
+// generated oauth2 security scheme. Downstream tooling typically replaces
+// this with a real value during a post-extract overlay step.
+const DefaultTokenURL = "https://{tenant}.api.example.com/oauth/token"
 
-// Stats tracks auth enrichment across a spec.
+// Stats summarises what auth enrichment did for a single spec.
 type Stats struct {
-	WithRights       int
-	WithScopes       int
-	WithUnmapped     int
-	UnmappedSample   map[string]bool
+	OperationsWithSecurity int
+	UniqueScopes           int
 }
 
-// ApplyToOperation sets rights extensions and oauth2 security from AMS mapping.
-func ApplyToOperation(op map[string]any, rights []string, opts ApplyOptions) {
-	if !opts.Enabled || opts.Mapping == nil || len(rights) == 0 {
+// ApplyToOperation sets the operation's security block to a single oauth2
+// requirement listing tokens as scopes. Tokens are normalised (Spring
+// ROLE_ prefix stripped, empty / scheme-name junk filtered, deduplicated,
+// sorted) before emission. If no usable tokens remain the operation's
+// security block is left untouched.
+func ApplyToOperation(op map[string]any, tokens []string) {
+	cleaned := Normalize(tokens)
+	if len(cleaned) == 0 {
 		return
 	}
-	rights = dedupeSort(rights)
-	scopes, unmapped := opts.Mapping.MinimalScopes(rights)
-
-	if len(rights) > 0 {
-		op[ExtRequiredRights] = toAnySlice(rights)
-	}
-	if len(unmapped) > 0 {
-		op[ExtUnmappedRights] = toAnySlice(unmapped)
-	}
-	if len(scopes) > 0 {
-		scopeAny := toAnySlice(scopes)
-		op["security"] = []any{
-			map[string]any{schemeOAuth2: scopeAny},
-		}
+	op["security"] = []any{
+		map[string]any{SchemeOAuth2: toAnySlice(cleaned)},
 	}
 }
 
-// EnrichSpec walks all path operations and enriches auth metadata.
-// When classifyExisting is true, tokens from existing security are split via mapping.
-func EnrichSpec(spec map[string]any, opts ApplyOptions, classifyExisting bool) Stats {
+// EnrichSpec walks every operation in spec, collects the union of every
+// oauth2 scope that appears on any operation's security block, and ensures
+// the document declares a matching `components.securitySchemes.oauth2`
+// entry whose scope catalogue includes every observed scope.
+//
+// The function is idempotent: re-running it on the same spec produces the
+// same components.securitySchemes content.
+func EnrichSpec(spec map[string]any) Stats {
 	var st Stats
-	if !opts.Enabled || opts.Mapping == nil {
+	if spec == nil {
 		return st
 	}
-	st.UnmappedSample = make(map[string]bool)
+	used := collectUsedScopes(spec, &st)
+	mergeOAuth2SecurityScheme(spec, used)
+	st.UniqueScopes = len(used)
+	return st
+}
 
+// Normalize cleans the raw auth tokens emitted by language extractors. It
+// strips the Spring ROLE_ prefix, filters out scheme placeholder names
+// like "oauth2"/"bearer", trims whitespace, deduplicates, and sorts.
+func Normalize(tokens []string) []string {
+	tokens = NormalizeSpringRights(tokens)
+	seen := make(map[string]struct{}, len(tokens))
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		switch strings.ToLower(t) {
+		case "oauth2", "bearerauth", "bearer", "apikey":
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func collectUsedScopes(spec map[string]any, st *Stats) map[string]struct{} {
+	used := make(map[string]struct{})
 	paths, _ := spec["paths"].(map[string]any)
 	if paths == nil {
-		return st
+		return used
 	}
 	for _, pathItem := range paths {
 		item, ok := pathItem.(map[string]any)
 		if !ok {
 			continue
 		}
-		for method, rawOp := range item {
+		for method, raw := range item {
 			if !isHTTPMethod(method) {
 				continue
 			}
-			op, ok := rawOp.(map[string]any)
+			op, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}
-			rights := rightsFromExtension(op)
-			if len(rights) == 0 && classifyExisting {
-				rights = rightsFromSecurity(op, opts.Mapping)
+			before := len(used)
+			for _, scope := range extractOAuth2Scopes(op) {
+				used[scope] = struct{}{}
 			}
-			if len(rights) == 0 {
-				continue
-			}
-			st.WithRights++
-			ApplyToOperation(op, rights, opts)
-			if sec, ok := op["security"].([]any); ok && len(sec) > 0 {
-				st.WithScopes++
-			}
-			if unmapped, ok := op[ExtUnmappedRights].([]any); ok && len(unmapped) > 0 {
-				st.WithUnmapped++
-				for _, u := range unmapped {
-					if s, ok := u.(string); ok && len(st.UnmappedSample) < 20 {
-						st.UnmappedSample[s] = true
-					}
-				}
+			if len(used) > before {
+				st.OperationsWithSecurity++
+			} else if hasOAuth2Requirement(op) {
+				st.OperationsWithSecurity++
 			}
 		}
 	}
-	mergeOAuth2ScopesComponent(spec, opts.Mapping, collectUsedScopes(spec))
-	return st
+	return used
 }
 
-func rightsFromExtension(op map[string]any) []string {
-	raw, ok := op[ExtRequiredRights]
-	if !ok {
-		return nil
-	}
-	return anyToStrings(raw)
-}
-
-func rightsFromSecurity(op map[string]any, m *Mapping) []string {
-	tokens := extractSecurityTokens(op)
-	if len(tokens) == 0 {
-		return nil
-	}
-	rights, oauthScopes := m.Classify(tokens)
-	if len(oauthScopes) > 0 && len(rights) == 0 {
-		// Already PAT scopes; derive rights for extension.
-		return m.RightsForScopes(oauthScopes)
-	}
-	return rights
-}
-
-func extractSecurityTokens(op map[string]any) []string {
+func extractOAuth2Scopes(op map[string]any) []string {
 	sec, ok := op["security"].([]any)
 	if !ok {
 		return nil
@@ -132,43 +130,34 @@ func extractSecurityTokens(op map[string]any) []string {
 		if !ok {
 			continue
 		}
-		for scheme, scopesRaw := range m {
-			if scheme == schemeOAuth2 || scheme == "userAuth" || scheme == "applicationAuth" {
-				out = append(out, anyToStrings(scopesRaw)...)
+		for scheme, scopes := range m {
+			if scheme != SchemeOAuth2 {
+				continue
 			}
+			out = append(out, anyToStrings(scopes)...)
 		}
 	}
 	return out
 }
 
-func collectUsedScopes(spec map[string]any) map[string]bool {
-	used := make(map[string]bool)
-	paths, _ := spec["paths"].(map[string]any)
-	if paths == nil {
-		return used
+func hasOAuth2Requirement(op map[string]any) bool {
+	sec, ok := op["security"].([]any)
+	if !ok {
+		return false
 	}
-	for _, pathItem := range paths {
-		item, ok := pathItem.(map[string]any)
+	for _, req := range sec {
+		m, ok := req.(map[string]any)
 		if !ok {
 			continue
 		}
-		for method, rawOp := range item {
-			if !isHTTPMethod(method) {
-				continue
-			}
-			op, ok := rawOp.(map[string]any)
-			if !ok {
-				continue
-			}
-			for _, s := range extractSecurityTokens(op) {
-				used[s] = true
-			}
+		if _, ok := m[SchemeOAuth2]; ok {
+			return true
 		}
 	}
-	return used
+	return false
 }
 
-func mergeOAuth2ScopesComponent(spec map[string]any, m *Mapping, used map[string]bool) {
+func mergeOAuth2SecurityScheme(spec map[string]any, used map[string]struct{}) {
 	if len(used) == 0 {
 		return
 	}
@@ -182,89 +171,49 @@ func mergeOAuth2ScopesComponent(spec map[string]any, m *Mapping, used map[string
 		schemes = make(map[string]any)
 		components["securitySchemes"] = schemes
 	}
-	oauth, _ := schemes[schemeOAuth2].(map[string]any)
+	oauth, _ := schemes[SchemeOAuth2].(map[string]any)
 	if oauth == nil {
 		oauth = map[string]any{
 			"type": "oauth2",
 			"flows": map[string]any{
 				"clientCredentials": map[string]any{
-					"tokenUrl": "https://{tenant}.api.example.com/oauth/token",
+					"tokenUrl": DefaultTokenURL,
 					"scopes":   map[string]any{},
 				},
 			},
 		}
-		schemes[schemeOAuth2] = oauth
+		schemes[SchemeOAuth2] = oauth
 	}
 	flows, _ := oauth["flows"].(map[string]any)
 	if flows == nil {
-		return
+		flows = map[string]any{}
+		oauth["flows"] = flows
 	}
 	cc, _ := flows["clientCredentials"].(map[string]any)
 	if cc == nil {
-		return
+		cc = map[string]any{
+			"tokenUrl": DefaultTokenURL,
+			"scopes":   map[string]any{},
+		}
+		flows["clientCredentials"] = cc
 	}
 	scopeMap, _ := cc["scopes"].(map[string]any)
 	if scopeMap == nil {
-		scopeMap = make(map[string]any)
+		scopeMap = map[string]any{}
 		cc["scopes"] = scopeMap
 	}
-	for id := range used {
-		if _, ok := scopeMap[id]; ok {
+	for scope := range used {
+		if _, ok := scopeMap[scope]; ok {
 			continue
 		}
-		desc := id
-		if m != nil && m.ScopeNames[id] != "" {
-			desc = m.ScopeNames[id]
-		}
-		scopeMap[id] = desc
+		scopeMap[scope] = scope
 	}
 }
 
-// MergeDiagnostics adds auth stats under info.x-cartographer-diagnostics.auth.
-func MergeDiagnostics(spec map[string]any, st Stats) {
-	info, _ := spec["info"].(map[string]any)
-	if info == nil {
-		return
-	}
-	diag, _ := info["x-cartographer-diagnostics"].(map[string]any)
-	if diag == nil {
-		diag = make(map[string]any)
-		info["x-cartographer-diagnostics"] = diag
-	}
-	sample := make([]any, 0, len(st.UnmappedSample))
-	for r := range st.UnmappedSample {
-		sample = append(sample, r)
-	}
-	sort.Slice(sample, func(i, j int) bool {
-		return sample[i].(string) < sample[j].(string)
-	})
-	diag["auth"] = map[string]any{
-		"operationsWithRights":       st.WithRights,
-		"operationsWithScopes":       st.WithScopes,
-		"operationsWithUnmappedRights": st.WithUnmapped,
-		"unmappedRightsSample":       sample,
-	}
-}
-
-func dedupeSort(in []string) []string {
-	seen := make(map[string]bool)
-	var out []string
-	for _, s := range in {
-		s = strings.TrimSpace(s)
-		if s == "" || seen[s] {
-			continue
-		}
-		seen[s] = true
-		out = append(out, s)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func toAnySlice(ss []string) []any {
-	out := make([]any, len(ss))
-	for i, s := range ss {
-		out[i] = s
+func toAnySlice(in []string) []any {
+	out := make([]any, len(in))
+	for i, v := range in {
+		out[i] = v
 	}
 	return out
 }
@@ -281,16 +230,14 @@ func anyToStrings(v any) []string {
 			}
 		}
 		return out
-	default:
-		return nil
 	}
+	return nil
 }
 
 func isHTTPMethod(k string) bool {
 	switch strings.ToUpper(k) {
 	case "GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE":
 		return true
-	default:
-		return false
 	}
+	return false
 }

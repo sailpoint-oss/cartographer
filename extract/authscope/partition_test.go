@@ -1,13 +1,42 @@
 package authscope
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
-func TestPartitionTokensWithoutMapping(t *testing.T) {
-	rights, scopes := PartitionTokens([]string{"api:orders:read", "read"}, nil)
-	if len(rights) != 1 || rights[0] != "api:orders:read" {
-		t.Fatalf("rights = %v", rights)
+func TestSplitTokens(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"alpha", []string{"alpha"}},
+		{"alpha,beta", []string{"alpha", "beta"}},
+		{"alpha, beta ,gamma", []string{"alpha", "beta", "gamma"}},
+		{"alpha beta\tgamma", []string{"alpha", "beta", "gamma"}},
+		{"alpha;beta;gamma", []string{"alpha", "beta", "gamma"}},
 	}
-	if len(scopes) != 1 || scopes[0] != "read" {
-		t.Fatalf("scopes = %v", scopes)
+	for _, tc := range cases {
+		got := SplitTokens(tc.in)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("SplitTokens(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestIsColonDelimitedAuthID(t *testing.T) {
+	cases := map[string]bool{
+		"api:orders:read":     true,
+		"identity:users:read": true,
+		"alpha":               false,
+		"a:b":                 false,
+		"api:orders":          false,
+		"":                    false,
+	}
+	for in, want := range cases {
+		if got := IsColonDelimitedAuthID(in); got != want {
+			t.Errorf("IsColonDelimitedAuthID(%q) = %v, want %v", in, got, want)
+		}
 	}
 }

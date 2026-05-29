@@ -56,6 +56,23 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestExtractorUniqueRouteOperationID(t *testing.T) {
+	extractor := New(Config{})
+	extractor.metadata.Operations["updateAttributes"] = &OperationInfo{
+		ID:     "updateAttributes",
+		Path:   "/resources/{id}/attributes",
+		Method: "PATCH",
+	}
+
+	id := extractor.uniqueRouteOperationID("updateAttributes", "POST", "/resources/{id}/attributes")
+	if id == "updateAttributes" {
+		t.Fatal("expected duplicate handler operation ID to be made route-specific")
+	}
+	if id != "updateAttributes_post_resources_id_attributes" {
+		t.Fatalf("unexpected unique operation ID %q", id)
+	}
+}
+
 func TestExtractor_HandlerInfoCacheIsolation(t *testing.T) {
 	// Test that each extractor instance has its own cache
 	cfg := Config{
@@ -135,10 +152,10 @@ func TestExtractor_StoreAndGetHandlerInfo(t *testing.T) {
 
 	// Store handler info with all fields
 	handlerInfo := &HandlerInfo{
-		RequestType:   "CreateUserRequest",
-		ResponseType:  "UserResponse",
+		RequestType:    "CreateUserRequest",
+		ResponseType:   "UserResponse",
 		ResponseStatus: 201,
-		ErrorCodes:    []int{400, 500},
+		ErrorCodes:     []int{400, 500},
 	}
 	comments := map[string]string{
 		"id":          "createUser",
@@ -228,8 +245,8 @@ func TestParseStructTags(t *testing.T) {
 			},
 		},
 		{
-			name:  "json ignored field",
-			input: "`json:\"-\"`",
+			name:     "json ignored field",
+			input:    "`json:\"-\"`",
 			expected: map[string]string{
 				// json:"-" should be skipped
 			},
@@ -432,13 +449,15 @@ func TestExtractor_GetEnhancedErrorSchema(t *testing.T) {
 		t.Fatal("Expected non-nil error schema")
 	}
 
-	// Should have basic structure
+	// The error schema is now a neutral placeholder marked with
+	// x-source.stubName so a downstream consumer overlay can resolve it
+	// without cartographer carrying a vendor-shaped envelope.
 	if _, ok := schema["type"]; !ok {
 		t.Error("Expected 'type' field in error schema")
 	}
-
-	if _, ok := schema["properties"]; !ok {
-		t.Error("Expected 'properties' field in error schema")
+	source, _ := schema["x-source"].(map[string]interface{})
+	if stub, _ := source["stubName"].(string); stub == "" {
+		t.Errorf("Expected x-source.stubName marker in error schema, got %+v", schema)
 	}
 }
 
@@ -467,4 +486,3 @@ func TestExtractor_GetErrorSchemaAnalyzer(t *testing.T) {
 		t.Fatal("Expected non-nil error schema analyzer")
 	}
 }
-

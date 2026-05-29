@@ -12,10 +12,6 @@ components:
 info:
     title: Spring Params
     version: "1.0"
-    x-cartographer-diagnostics:
-        controllers: 1
-        operations: 1
-        unmappedHandlerMethods: 0
 openapi: 3.0.3
 paths:
     /api/v1/spring:

@@ -23,20 +23,25 @@ func convertTSOperation(op *Operation) *specmodel.Operation {
 	for i, p := range op.Parameters {
 		params[i] = convertTSParam(p, op.File)
 	}
+	formParams := make([]*specmodel.Parameter, len(op.FormParams))
+	for i, p := range op.FormParams {
+		formParams[i] = convertTSParam(p, op.File)
+	}
 
 	var security []specmodel.SecurityRequirement
-	var rights []string
 	if op.RequiresAuth && len(op.Security) > 0 {
+		// op.Security from the TS extractor is `[scheme, token1, token2, ...]`.
+		// When only the first element is present and it does not name a known
+		// scheme, treat it as a bare scope under the default oauth2 scheme.
 		scheme := op.Security[0]
 		tokens := op.Security[1:]
 		if len(tokens) == 0 && scheme != "oauth2" && scheme != "bearerAuth" && scheme != "bearer" {
 			tokens = []string{scheme}
 			scheme = "oauth2"
 		}
-		var oauthScopes []string
-		rights, oauthScopes = authscope.PartitionTokens(tokens, nil)
+		scopes := authscope.Normalize(tokens)
 		security = []specmodel.SecurityRequirement{
-			{Scheme: scheme, Scopes: oauthScopes},
+			{Scheme: scheme, Scopes: scopes},
 		}
 	}
 
@@ -57,6 +62,7 @@ func convertTSOperation(op *Operation) *specmodel.Operation {
 		Description:            op.Description,
 		Tags:                   op.Tags,
 		Parameters:             params,
+		FormParams:             formParams,
 		RequestBodyType:        op.RequestBodyType,
 		RequestBodyDescription: op.RequestBodyDescription,
 		ResponseType:           op.ResponseType,
@@ -65,7 +71,6 @@ func convertTSOperation(op *Operation) *specmodel.Operation {
 		Deprecated:             op.Deprecated,
 		DeprecatedSince:        op.DeprecatedSince,
 		Security:               security,
-		Rights:                 rights,
 		ConsumesContentType:    op.ConsumesContentType,
 		ProducesContentType:    op.ProducesContentType,
 		ErrorResponses:         op.ErrorResponses,

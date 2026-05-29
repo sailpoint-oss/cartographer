@@ -56,6 +56,9 @@ func TestIsBuildRoutesMethod(t *testing.T) {
 	if !isBuildRoutesMethod(&ast.FuncDecl{Name: ast.NewIdent("BuildRoutes")}) {
 		t.Error("expected BuildRoutes to match")
 	}
+	if !isBuildRoutesMethod(&ast.FuncDecl{Name: ast.NewIdent("BuildRoutesWithAuth")}) {
+		t.Error("expected BuildRoutesWithAuth to match")
+	}
 	if isBuildRoutesMethod(&ast.FuncDecl{Name: ast.NewIdent("Setup")}) {
 		t.Error("Setup should not match BuildRoutes")
 	}

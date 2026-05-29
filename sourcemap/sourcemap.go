@@ -80,6 +80,13 @@ func readLocation(m map[string]any) sourceloc.Location {
 	if len(m) == 0 {
 		return sourceloc.Location{}
 	}
+	if src := asMap(m["x-source"]); len(src) > 0 {
+		return sourceloc.Location{
+			File:   asString(src["file"]),
+			Line:   asInt(src["line"]),
+			Column: asInt(src["column"]),
+		}
+	}
 	return sourceloc.Location{
 		File:   asString(m["x-source-file"]),
 		Line:   asInt(m["x-source-line"]),

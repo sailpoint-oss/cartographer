@@ -61,15 +61,20 @@ func convertJavaOperation(op *Operation) *specmodel.Operation {
 		formParams = append(formParams, convertJavaParam(p, op.File))
 	}
 
+	// Aggregate every auth token the Java extractor surfaced: explicit
+	// OAuthScopes, rights from @PreAuthorize / @Secured / @RolesAllowed,
+	// and the bare security requirements. Cartographer emits all of them as
+	// OAuth2 scope requirements; downstream tooling decides whether any of
+	// them need translating into something else.
+	tokens := append([]string{}, op.OAuthScopes...)
+	tokens = append(tokens, op.Rights...)
+	tokens = append(tokens, op.Security...)
+	scopes := filterValidScopes(tokens)
 	var security []specmodel.SecurityRequirement
-	if len(op.OAuthScopes) > 0 {
+	if len(scopes) > 0 {
 		security = []specmodel.SecurityRequirement{
-			{Scheme: "oauth2", Scopes: filterValidScopes(op.OAuthScopes)},
+			{Scheme: "oauth2", Scopes: scopes},
 		}
-	}
-	rights := filterValidScopes(op.Rights)
-	if len(rights) == 0 && len(op.Security) > 0 {
-		rights = filterValidScopes(op.Security)
 	}
 
 	var annotated []specmodel.AnnotatedResponse
@@ -96,7 +101,6 @@ func convertJavaOperation(op *Operation) *specmodel.Operation {
 		Deprecated:             op.Deprecated,
 		DeprecatedSince:        op.DeprecatedSince,
 		Security:               security,
-		Rights:                 rights,
 		ConsumesContentType:    op.ConsumesContentType,
 		ProducesContentType:    op.ProducesContentType,
 		ReturnDescription:      op.ReturnDescription,

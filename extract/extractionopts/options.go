@@ -19,14 +19,6 @@ type Options struct {
 
 	// MergeCoLocatedOpenAPI merges in-repo OpenAPI path fragments when present.
 	MergeCoLocatedOpenAPI bool
-
-	// EnableAuthScopeTranslation emits x-sailpoint-required-rights and translates
-	// rights to minimal PAT scopes in operation.security.oauth2.
-	EnableAuthScopeTranslation bool
-
-	// AMSMappingPath is a JSON file from ams-mapping-gen (consumer-provided).
-	// Empty uses the fictional test fixture when running cartographer tests.
-	AMSMappingPath string
 }
 
 // SignaturePaginationSet returns configured pagination type names as a set.

@@ -14,16 +14,18 @@ func TestEmitExtensions(t *testing.T) {
 			name: "all fields",
 			loc:  Location{File: "Foo.java", Line: 42, Column: 5},
 			want: map[string]interface{}{
-				"x-source-file":   "Foo.java",
-				"x-source-line":   42,
-				"x-source-column": 5,
+				"x-source": map[string]interface{}{
+					"file":   "Foo.java",
+					"line":   42,
+					"column": 5,
+				},
 			},
 		},
 		{
 			name: "file only",
 			loc:  Location{File: "Bar.ts"},
 			want: map[string]interface{}{
-				"x-source-file": "Bar.ts",
+				"x-source": map[string]interface{}{"file": "Bar.ts"},
 			},
 		},
 		{
@@ -35,8 +37,7 @@ func TestEmitExtensions(t *testing.T) {
 			name: "line and column only",
 			loc:  Location{Line: 10, Column: 3},
 			want: map[string]interface{}{
-				"x-source-line":   10,
-				"x-source-column": 3,
+				"x-source": map[string]interface{}{"line": 10, "column": 3},
 			},
 		},
 	}
@@ -47,10 +48,8 @@ func TestEmitExtensions(t *testing.T) {
 			if len(got) != len(tt.want) {
 				t.Errorf("EmitExtensions() returned %d keys, want %d", len(got), len(tt.want))
 			}
-			for k, v := range tt.want {
-				if got[k] != v {
-					t.Errorf("EmitExtensions()[%q] = %v, want %v", k, got[k], v)
-				}
+			if !equalMaps(got, tt.want) {
+				t.Errorf("EmitExtensions() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}
@@ -63,15 +62,43 @@ func TestApplyTo(t *testing.T) {
 	loc := Location{File: "foo.go", Line: 10, Column: 1}
 	loc.ApplyTo(m)
 
-	if m["x-source-file"] != "foo.go" {
-		t.Errorf("expected x-source-file=foo.go, got %v", m["x-source-file"])
+	source, ok := m["x-source"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected x-source object, got %v", m["x-source"])
 	}
-	if m["x-source-line"] != 10 {
-		t.Errorf("expected x-source-line=10, got %v", m["x-source-line"])
+	if source["file"] != "foo.go" {
+		t.Errorf("expected x-source.file=foo.go, got %v", source["file"])
+	}
+	if source["line"] != 10 {
+		t.Errorf("expected x-source.line=10, got %v", source["line"])
 	}
 	if m["operationId"] != "getFoo" {
 		t.Error("ApplyTo should not overwrite existing keys")
 	}
+}
+
+func equalMaps(a, b map[string]interface{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok {
+			return false
+		}
+		am, aok := av.(map[string]interface{})
+		bm, bok := bv.(map[string]interface{})
+		if aok || bok {
+			if !aok || !bok || !equalMaps(am, bm) {
+				return false
+			}
+			continue
+		}
+		if av != bv {
+			return false
+		}
+	}
+	return true
 }
 
 func TestIsZero(t *testing.T) {

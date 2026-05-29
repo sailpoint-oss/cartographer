@@ -3,6 +3,7 @@ package tsextract
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sailpoint-oss/cartographer/extract/index"
@@ -1147,16 +1148,217 @@ func TestSecurityDecorators(t *testing.T) {
 	}
 }
 
+func TestClassLevelRequireRightAndAsyncServiceReturnInference(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	writeTestFile(t, src, "orders.controller.ts", `import { Controller, Get } from '@nestjs/common';
+
+@Controller('orders')
+@RequireRight('example:order:read')
+export class OrdersController {
+	constructor(private readonly orders: OrdersService) {}
+
+	@Get()
+	async listOrders() {
+		return await this.orders.list();
+	}
+}
+
+export class OrdersService {
+	list(): Promise<OrderDto[]> {
+		return null;
+	}
+}
+
+export class OrderDto {
+	id: string;
+}
+`)
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{src}})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(result.Operations) != 1 {
+		t.Fatalf("operations = %#v", result.Operations)
+	}
+	op := result.Operations[0]
+	if !op.RequiresAuth || len(op.Security) != 1 || op.Security[0] != "example:order:read" {
+		t.Fatalf("class-level RequireRight did not propagate: auth=%v security=%#v", op.RequiresAuth, op.Security)
+	}
+	if op.ResponseType != "OrderDto[]" {
+		t.Fatalf("response type = %q", op.ResponseType)
+	}
+	if op.ResponseStatus != 200 {
+		t.Fatalf("response status = %d", op.ResponseStatus)
+	}
+}
+
+func TestAsyncServiceReturnInferenceAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	writeTestFile(t, src, "widgets.controller.ts", `import { Controller, Get } from '@nestjs/common';
+import { WidgetService } from './widgets.service';
+
+@Controller('widgets')
+export class WidgetsController {
+	constructor(private readonly widgets: WidgetService) {}
+
+	@Get()
+	async listWidgets() {
+		return this.widgets.list();
+	}
+}
+`)
+	writeTestFile(t, src, "widgets.service.ts", `export class WidgetService {
+	public async list(): Promise<WidgetDto[] | null> {
+		return null;
+	}
+}
+
+export class WidgetDto {
+	id: string;
+}
+`)
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{src}})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(result.Operations) != 1 {
+		t.Fatalf("operations = %#v", result.Operations)
+	}
+	if result.Operations[0].ResponseType != "WidgetDto[]" {
+		t.Fatalf("response type = %q", result.Operations[0].ResponseType)
+	}
+}
+
+func TestNestJSRouteArraysAuthMultipartAndDTOQuery(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	writeTestFile(t, src, "upload.controller.ts", `import { Controller, Get, Post, Query, UploadedFile, UseInterceptors, HttpCode } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+
+export class SearchQuery {
+	page: number;
+	term: string;
+}
+
+@Controller('assets')
+export class AssetController {
+	@Get(['effective', 'current'])
+	@RequireRight('example:asset:read')
+	list(@Query(new ValidationPipe()) query: SearchQuery): Promise<{ items: AssetDto[] }> {
+		return null;
+	}
+
+	@Post('upload')
+	@HttpCode(202)
+	@UseInterceptors(FileInterceptor('file'))
+	@RequireGroup('operators')
+	upload(@UploadedFile() file: Express.Multer.File): Promise<void> {
+		return null;
+	}
+}
+
+export class AssetDto {
+	id: string;
+}
+`)
+	result, err := Extract(Config{
+		RootDir:    dir,
+		SourceDirs: []string{src},
+	})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	got := map[string]*Operation{}
+	for _, op := range result.Operations {
+		got[op.Method+" "+op.Path] = op
+	}
+	if got["GET /assets/effective"] == nil || got["GET /assets/current"] == nil {
+		t.Fatalf("expected both array routes, got %#v", got)
+	}
+	effective := got["GET /assets/effective"]
+	if !effective.RequiresAuth || len(effective.Security) != 1 || effective.Security[0] != "example:asset:read" {
+		t.Fatalf("security = %#v requiresAuth=%v", effective.Security, effective.RequiresAuth)
+	}
+	if len(effective.Parameters) != 2 {
+		t.Fatalf("expected DTO query params, got %#v", effective.Parameters)
+	}
+	if effective.ResponseType != "ListResponse" {
+		t.Fatalf("inline response type = %q", effective.ResponseType)
+	}
+	if _, ok := result.Schemas["ListResponse"]; !ok {
+		t.Fatalf("expected synthetic inline response schema")
+	}
+	upload := got["POST /assets/upload"]
+	if upload == nil {
+		t.Fatalf("missing upload operation")
+	}
+	if upload.ResponseStatus != 202 {
+		t.Fatalf("upload status = %d", upload.ResponseStatus)
+	}
+	if upload.ConsumesContentType != "multipart/form-data" {
+		t.Fatalf("upload consumes = %q", upload.ConsumesContentType)
+	}
+	if len(upload.FormParams) != 1 || upload.FormParams[0].Type != "file" {
+		t.Fatalf("upload form params = %#v", upload.FormParams)
+	}
+}
+
+// TestRequireGroupNotEmittedAsScope verifies that @RequireGroup (including enum
+// references such as SecurityGroups.ORG_ADMIN) marks auth as required but does
+// NOT emit group/enum names as OAuth2 scope tokens, while a co-located
+// @RequireRight string literal is still emitted as the scope.
+func TestRequireGroupNotEmittedAsScope(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	writeTestFile(t, src, "widget.controller.ts", `import { Controller, Get } from '@nestjs/common';
+
+@Controller('widgets')
+@RequireGroup(SecurityGroups.ORG_ADMIN)
+@RequireRight('api:widgets:read')
+export class WidgetController {
+	@Get()
+	getData(): Promise<WidgetDto> {
+		return null;
+	}
+}
+
+export class WidgetDto {
+	id: string;
+}
+`)
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{src}})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(result.Operations) == 0 {
+		t.Fatal("no operations extracted")
+	}
+	op := result.Operations[0]
+	if !op.RequiresAuth {
+		t.Errorf("expected RequiresAuth=true from class-level auth decorators")
+	}
+	for _, s := range op.Security {
+		if strings.Contains(s, "SecurityGroups") || s == "ORG_ADMIN" {
+			t.Errorf("group/enum reference leaked into scopes: %#v", op.Security)
+		}
+	}
+	if len(op.Security) != 1 || op.Security[0] != "api:widgets:read" {
+		t.Errorf("security = %#v, want only the RequireRight scope", op.Security)
+	}
+}
+
 // --- Phase 5: JSDoc Structured Tags ---
 
 func TestJSDocStructuredParsing(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		summary  string
-		desc     string
-		params   map[string]string
-		returns  string
+		name    string
+		input   string
+		summary string
+		desc    string
+		params  map[string]string
+		returns string
 	}{
 		{
 			name: "full jsdoc",

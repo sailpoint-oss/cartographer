@@ -8,8 +8,8 @@ The repository is intentionally focused on per-service extraction. Service teams
 
 - `tree-sitter-openapi` owns syntax grammars and bindings.
 - `navigator` owns OpenAPI and Arazzo parsing, indexes, pointers, and shared document validation.
-- `barrelman` owns lint rules and diagnostic execution.
-- `cartographer` owns service-local source extraction.
+- `barrelman` owns generic OpenAPI lint rules and a `RulePack` plug-in surface so downstream consumers can attach their own rule packs.
+- `cartographer` owns service-local source extraction. It emits generic OpenAPI plus neutral `x-source` metadata and ships no vendor-branded vocabulary; consumers layer their own naming and stub catalogs on top.
 - `telescope` owns spec-side linting, LSP/editor UX, and the in-process generation loop that wraps cartographer extraction.
 - `barometer` owns runtime contract execution.
 
@@ -119,21 +119,33 @@ service:
     errorSchema: legacy-error-response  # or problem-details when handlers reference RFC 7807 types
     signaturePaginationTypes: []        # expand indexed DTO fields when type appears in a method signature
     mergeCoLocatedOpenAPI: false        # merge in-repo OpenAPI path fragments for hybrid repos
-    authScopeTranslation: true          # emit x-sailpoint-required-rights + minimal security.oauth2 PAT scopes
-    amsMappingPath: ""                  # JSON from ams-mapping-gen; omit to use fictional test mapping in unit tests only
 ```
 
-## Rights and PAT scopes
+## Auth extraction
 
-Cartographer separates **AMS rights** (what services enforce via `@RequireRight`, `web.RequireRights`, etc.) from **PAT scopes** (what customers select on tokens). When `authScopeTranslation` is enabled (default):
+Cartographer surfaces every auth-requirement string it finds in source as a standard OpenAPI `security.oauth2` scope on the operation. There is no translation, no consumer-supplied mapping JSON, and no vendor-flavoured `x-*` extension. Downstream consumers decide what each token means: tokens that are actually rights, permissions, or role names can be remapped to PAT scopes in a post-extract overlay step the consumer owns.
 
-- `x-sailpoint-required-rights` on each operation lists rights extracted from source.
-- `security.oauth2` lists the minimal PAT scope set that covers those rights (greedy set cover over the AMS mapping).
-- `x-sailpoint-auth-unmapped-rights` is set when a right has no scope in the loaded mapping.
+### What gets matched
 
-Generate a production mapping with `go run ./cmd/ams-mapping-gen` against a local `authorization-model-service` checkout and pass the JSON path via `amsMappingPath` or `extractionopts.AMSMappingPath`. **Do not commit production `idn:*` / fleet inventory into this public repository** — ship only fictional `extract/authscope/testdata/mapping.json` here; consumers (e.g. Meridian pipeline) version the real table separately. See [docs/ANONYMIZATION.md](docs/ANONYMIZATION.md).
+Auth requirements are detected via **framework presets** — a generic name set that covers the auth conventions of the major web frameworks. No per-service configuration is required.
 
-Extracted specs may include `info.x-cartographer-diagnostics` with controller, operation, and auth coverage counters for triage.
+| Language | Patterns detected |
+| --- | --- |
+| Go | Any call whose function name matches the generic set (`Require*`, `Authorize`, `CheckScope*`, `CheckPermission*`, `HasScope*`, `HasRole*`, `HasPermission*`, `HasAuthority*`, `*AuthMiddleware`, etc.). String-literal and named-string-constant arguments are extracted. The call-graph is traversed cycle-safely from the route handler, so auth checks inside helper functions are found too. |
+| Java | Spring Security `@PreAuthorize`, `@Secured`, `@PermitAll`, `@DenyAll`; JAX-RS `@RolesAllowed`. The `hasAuthority(...)` / `hasRole(...)` Spring expression DSL is parsed. |
+| Python | FastAPI `Depends(Security(scopes=[...]))`, `Depends(OAuth2PasswordBearer(...))`. |
+| TypeScript | NestJS `@UseGuards(...)`, `@Roles(...)`, `@Scopes(...)`, `@ApiBearerAuth`, `@ApiSecurity`, `@ApiOAuth2`, `@SetMetadata('scopes', [...])`. |
+| C# | `[Authorize(Policy = "...")]`, `[Authorize(Roles = "...")]`, `[Authorize("...")]`, `.RequireAuthorization("...")`. |
+
+### What gets emitted
+
+For every operation whose source declares one or more auth requirements:
+
+- The operation's `security` is set to `[{oauth2: [<extracted tokens>]}]`.
+- Spring Security `ROLE_` prefixes are stripped when the inner token is a colon-delimited auth id.
+- `components.securitySchemes.oauth2` is populated with the union of every observed scope and uses the fictional `https://{tenant}.api.example.com/oauth/token` token URL by default.
+
+No vendor extensions are emitted. If your codebase uses an organisation-specific auth helper whose name is not in the generic preset set, cartographer will not surface a security requirement; rename the helper to match the conventions above, or layer the missing pattern into your own post-extract overlay.
 
 **Public repo policy:** Testdata and tests must use fictional fixtures only — no real service inventory or material copied from private codebases. See [docs/ANONYMIZATION.md](docs/ANONYMIZATION.md).
 
@@ -173,10 +185,36 @@ Cartographer now publishes from `main` automatically.
 go test ./...
 ```
 
+### Golden spec snapshots
+
+Full OpenAPI snapshots live under `extract/testdata/golden/e2e/`. The table-driven
+`TestGoldenSpecs` in `extract/golden_specs_test.go` compares extractor output against
+those YAML files (source locations and diagnostics are stripped for stability).
+
+Update goldens after intentional extractor changes:
+
+```bash
+go test ./extract -run TestGoldenSpecs -update -count=1
+```
+
+`-update` is refused when `CI` is set. New fixtures must follow
+[docs/ANONYMIZATION.md](docs/ANONYMIZATION.md) (`com.example`, `example.com`,
+generic scopes such as `api:resource:read`).
+
 For local multi-repo development, prefer a short-lived `go.work` instead of long-lived `replace` directives:
 
 ```bash
 go work init . ../telescope/server
 go work use ../navigator ../barrelman
 ```
+
+## Related repositories
+
+This repo is part of a six-repo OpenAPI toolchain:
+
+- [tree-sitter-openapi](https://github.com/sailpoint-oss/tree-sitter-openapi) — grammar and tree-sitter bindings
+- [navigator](https://github.com/sailpoint-oss/navigator) — parse, index, `$ref` resolution, document validation
+- [barrelman](https://github.com/sailpoint-oss/barrelman) — generic OpenAPI lint rules and plug-in surface
+- [telescope](https://github.com/sailpoint-oss/telescope) — VS Code extension, language server, and CLI built on the above
+- [barometer](https://github.com/sailpoint-oss/barometer) — live HTTP contract testing and Arazzo runner
 

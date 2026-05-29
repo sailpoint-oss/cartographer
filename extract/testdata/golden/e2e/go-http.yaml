@@ -1,0 +1,63 @@
+components:
+    schemas:
+        Forbidden:
+            description: Error response for HTTP 403 (Forbidden) - resolved by consumer overlay
+            type: object
+            x-source:
+                stubName: LegacyErrorResponse
+        Item:
+            description: Item is a sample JSON response type.
+            properties:
+                id:
+                    format: int32
+                    type: integer
+                name:
+                    type: string
+            type: object
+        Unauthorized:
+            description: Error response for HTTP 401 (Unauthorized) - resolved by consumer overlay
+            type: object
+            x-source:
+                stubName: LegacyErrorResponse
+    securitySchemes:
+        oauth2:
+            flows:
+                clientCredentials:
+                    scopes:
+                        api:resource:read: 'Permission: api:resource:read'
+                    tokenUrl: /oauth/token
+            type: oauth2
+info:
+    title: Example HTTP API
+    version: "1.0"
+    x-service-template: go-web
+openapi: 3.2.0
+paths:
+    /api/v1/items:
+        get:
+            operationId: listItems
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                items:
+                                    $ref: '#/components/schemas/Item'
+                                type: array
+                    description: Success
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Unauthorized'
+                    description: Unauthorized
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Forbidden'
+                    description: Forbidden
+            security:
+                - oauth2:
+                    - api:resource:read
+            summary: List Items

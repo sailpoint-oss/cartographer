@@ -1,0 +1,34 @@
+name: leak-guard
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Run leak-guard
+        working-directory: .github/leak-guard/check
+        run: |
+          go run . \
+            -bloom ../bloom.bin \
+            -salt ../salt.bin \
+            -patterns ../patterns.yaml \
+            -allow ../allow.txt \
+            -skip ../skip-globs.txt \
+            -skip-local ../skip-globs.local.txt \
+            -root "$GITHUB_WORKSPACE"

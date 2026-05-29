@@ -378,6 +378,60 @@ func TestSpringBootTypes(t *testing.T) {
 	}
 }
 
+func TestJaxRsRightsJsonPatchAndResponseEntityInference(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "src", "main", "java", "com", "example", "api")
+	writeTestFile(t, pkg, "WidgetResource.java", `package com.example.api;
+
+import javax.ws.rs.*;
+import javax.ws.rs.core.Response;
+
+@Path("/widgets")
+@RequireRight(Rights.READ)
+public class WidgetResource {
+    @PATCH
+    @Path("/{id}")
+    public Response patchWidget(@PathParam("id") String id, JsonPatch patch) {
+        var response = new WidgetDto();
+        return Response.ok(response).build();
+    }
+}
+
+final class Rights {
+    static final String READ = "example:widget:read";
+}
+
+class JsonPatch {}
+
+class WidgetDto {
+    private String id;
+}
+`)
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{dir}})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	var op *Operation
+	for _, candidate := range result.Operations {
+		if candidate.Method == "PATCH" && candidate.Path == "/widgets/{id}" {
+			op = candidate
+			break
+		}
+	}
+	if op == nil {
+		t.Fatalf("missing PATCH /widgets/{id}; got %#v", result.Operations)
+	}
+	if op.ResponseType != "WidgetDto" {
+		t.Fatalf("response type = %q", op.ResponseType)
+	}
+	if op.ConsumesContentType != "application/json-patch+json" {
+		t.Fatalf("consumes = %q", op.ConsumesContentType)
+	}
+	if len(op.Rights) != 1 || op.Rights[0] != "example:widget:read" {
+		t.Fatalf("rights = %#v", op.Rights)
+	}
+}
+
 // --- JAX-RS Extraction Tests ---
 
 func TestJaxRsExtraction(t *testing.T) {
@@ -880,11 +934,11 @@ public class ChildrenResource {
 		got[op.Method+" "+op.Path] = true
 	}
 	for _, want := range []string{
-		"GET /v3/parents/parents/{id}/children/items",
-		"POST /v3/parents/parents/{id}/children/items",
-		"GET /v3/parents/parents/{id}/children/widgets",
-		"POST /v3/parents/parents/{id}/children/widgets",
-		"GET /v3/parents/parents/{id}/children/{childId}",
+		"GET /v3/parents/{id}/children/items",
+		"POST /v3/parents/{id}/children/items",
+		"GET /v3/parents/{id}/children/widgets",
+		"POST /v3/parents/{id}/children/widgets",
+		"GET /v3/parents/{id}/children/{childId}",
 	} {
 		if !got[want] {
 			t.Fatalf("missing %s from nested subresource extraction; got %#v", want, got)
@@ -1404,6 +1458,7 @@ func TestParsePreAuthorize(t *testing.T) {
 	}{
 		{`("hasAuthority('api:api:read')")`, []string{"api:api:read"}},
 		{`("hasRole('ADMIN')")`, []string{"ROLE_ADMIN"}},
+		{`("hasRole('api:example:read')")`, []string{"api:example:read"}},
 		{`("hasAnyAuthority('api:read', 'api:write')")`, []string{"api:read", "api:write"}},
 	}
 	for _, tt := range tests {
@@ -1984,17 +2039,23 @@ public class ItemDTO {
 	}
 }
 
-func TestRequireRightExtraction(t *testing.T) {
+// TestAuthAnnotationExtraction exercises the generic Spring-Security
+// annotation surface (@PreAuthorize) the Java extractor now relies on for
+// auth-requirement detection. The legacy vendor-specific @RequireRight
+// annotation handler was removed when the toolchain de-branded; equivalent
+// scopes are now expressed via the standard @PreAuthorize / hasAuthority()
+// Spring Security DSL.
+func TestAuthAnnotationExtraction(t *testing.T) {
 	src := `package com.example;
 @Path("/api/v1/tags")
 public class TagsResource {
     @GET
-    @RequireRight("api:tags:read")
+    @PreAuthorize("hasAuthority('api:tags:read')")
     public List<TagDTO> list() { return null; }
 
     @DELETE
     @Path("/{id}")
-    @RequireRight({"api:tags:delete", "api:tags:manage"})
+    @PreAuthorize("hasAuthority('api:tags:delete') and hasAuthority('api:tags:manage')")
     public void delete(@PathParam("id") String id) {}
 }`
 
@@ -2063,30 +2124,6 @@ func TestParsePreAuthorizeHasAnyRole(t *testing.T) {
 		for i := range got {
 			if got[i] != tt.expected[i] {
 				t.Errorf("parsePreAuthorize(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.expected[i])
-			}
-		}
-	}
-}
-
-func TestParseRequireRight(t *testing.T) {
-	tests := []struct {
-		input     string
-		constants map[string]string
-		expected  []string
-	}{
-		{`("api:tags:read")`, nil, []string{"api:tags:read"}},
-		{`({"api:a", "api:b"})`, nil, []string{"api:a", "api:b"}},
-		{`(Right.READ)`, map[string]string{"READ": "api:tags:read"}, []string{"api:tags:read"}},
-	}
-	for _, tt := range tests {
-		got := parseRequireRight(tt.input, tt.constants)
-		if len(got) != len(tt.expected) {
-			t.Errorf("parseRequireRight(%q) = %v, want %v", tt.input, got, tt.expected)
-			continue
-		}
-		for i := range got {
-			if got[i] != tt.expected[i] {
-				t.Errorf("parseRequireRight(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.expected[i])
 			}
 		}
 	}
@@ -2614,6 +2651,49 @@ public class ItemResource {
 	}
 	if _, ok := headers["X-Total-Count"]; !ok {
 		t.Error("missing X-Total-Count in spec response headers")
+	}
+}
+
+func TestJaxRsResponseEntityVariableTyping(t *testing.T) {
+	src := `package com.example;
+import javax.ws.rs.*;
+import javax.ws.rs.core.Response;
+
+@Path("/api/v1/items")
+public class ItemResource {
+    @GET
+    @Path("/{id}")
+    public Response get(@PathParam("id") String id) {
+        ItemDto item = service.get(id);
+        return Response.ok(item).build();
+    }
+}
+
+class ItemDto {
+    public String id;
+}`
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
+	os.WriteFile(filepath.Join(dir, "src", "ItemResource.java"), []byte(src), 0o644)
+	result, err := Extract(Config{RootDir: dir, SourceDirs: []string{filepath.Join(dir, "src")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := opByMethodPath(t, result, "GET", "/api/v1/items/{id}")
+	if op.ResponseType != "ItemDto" {
+		t.Fatalf("response type = %q, want ItemDto", op.ResponseType)
+	}
+	if op.ResponseStatus != 200 {
+		t.Fatalf("response status = %d", op.ResponseStatus)
+	}
+}
+
+func TestJoinPathsDedupeRepeatedMountSegment(t *testing.T) {
+	if got := joinPaths("/v3/sources", "sources"); got != "/v3/sources" {
+		t.Fatalf("joinPaths deduped path = %q", got)
+	}
+	if got := joinPaths("/v3/sources", "{id}/schemas"); got != "/v3/sources/{id}/schemas" {
+		t.Fatalf("joinPaths nested path = %q", got)
 	}
 }
 

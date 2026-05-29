@@ -1,0 +1,104 @@
+components:
+    schemas:
+        ItemInfo:
+            properties:
+                id:
+                    type: integer
+            type: object
+        SearchResponseItemInfo:
+            description: 'External type: SearchResponseItemInfo'
+            type: object
+            x-source:
+                stubName: SearchResponseItemInfo
+    securitySchemes:
+        oauth2:
+            flows:
+                clientCredentials:
+                    scopes:
+                        example:item:read: example:item:read
+                    tokenUrl: /oauth/token
+            type: oauth2
+info:
+    title: Example Minimal API
+    version: "1.0"
+    x-service-template: csharp-web
+openapi: 3.2.0
+paths:
+    /items:
+        get:
+            description: Retrieve a list of Items.
+            operationId: ListItems
+            parameters:
+                - description: Max number of results to return.
+                  example: "250"
+                  explode: true
+                  in: query
+                  name: limit
+                  required: false
+                  schema:
+                    type: integer
+                  style: form
+            responses:
+                "204":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/SearchResponseItemInfo'
+                    description: Items
+                    headers:
+                        X-Total-Count:
+                            description: X-Total-Count
+                            schema:
+                                format: int64
+                                type: integer
+            security:
+                - oauth2:
+                    - example:item:read
+            summary: List Items
+            tags:
+                - Item
+    /items/{id}:
+        delete:
+            description: Delete an existing Item.
+            operationId: delete_items
+            parameters:
+                - description: The unique identifier of the resource.
+                  example: 550e8400-e29b-41d4-a716-446655440000
+                  in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: integer
+                  style: simple
+            responses:
+                "204":
+                    description: Item deleted
+            summary: Delete Item
+            tags:
+                - Item
+    /items/retry/{id}:
+        post:
+            description: Create a new Retry.
+            operationId: post_items_retry
+            parameters:
+                - description: The unique identifier of the resource.
+                  example: 550e8400-e29b-41d4-a716-446655440000
+                  in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: integer
+                  style: simple
+            responses:
+                "204":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ItemInfo'
+                    description: Retry created
+            summary: Create Retry
+            tags:
+                - Item
+tags:
+    - description: Operations related to Item
+      name: Item

@@ -198,18 +198,18 @@ func TestParseWebhookAnnotations(t *testing.T) {
 		{
 			name: "full annotation",
 			comments: `
-// @openapi:webhook resourceGroupCreated
-// @openapi:webhook:topic resource-group-v1
+// @openapi:webhook widgetCreated
+// @openapi:webhook:topic widget-events-v1
 // @openapi:webhook:eventType CREATED
-// @openapi:webhook:description Fired when a resource group is created
-// @openapi:webhook:payload EntityEventDTO
+// @openapi:webhook:description Fired when a widget is created
+// @openapi:webhook:payload WidgetEventDTO
 `,
 			expected: &WebhookInfo{
-				Name:        "resourceGroupCreated",
-				Topic:       "resource-group-v1",
+				Name:        "widgetCreated",
+				Topic:       "widget-events-v1",
 				EventType:   "CREATED",
-				Description: "Fired when a resource group is created",
-				PayloadType: "EntityEventDTO",
+				Description: "Fired when a widget is created",
+				PayloadType: "WidgetEventDTO",
 				Direction:   "publish",
 			},
 		},

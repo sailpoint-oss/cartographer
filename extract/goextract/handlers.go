@@ -16,13 +16,20 @@ type HandlerInfo struct {
 	ResponseType     string
 	ResponseStatus   int
 	ErrorCodes       []int
-	PathParams       []ParamInfo // Path parameters with type info
-	QueryParams      []ParamInfo // Query parameters with type info
-	HeaderParams     []ParamInfo // Header parameters
-	FormParams       []ParamInfo // Form parameters from FormValue
-	ContentType      string      // Detected content type for response
+	PathParams       []ParamInfo           // Path parameters with type info
+	QueryParams      []ParamInfo           // Query parameters with type info
+	HeaderParams     []ParamInfo           // Header parameters
+	FormParams       []ParamInfo           // Form parameters from FormValue
+	ContentType      string                // Detected content type for response
+	ResponseHeaders  map[string]string     // Response headers set by the handler
 	ErrorResponses   []ErrorResponseInfo   // Detailed error responses with messages
 	SuccessResponses []SuccessResponseInfo // Detailed success responses
+
+	// AuthTokens are scope / role / permission strings extracted from any
+	// auth-requirement call inside the handler body (or any helper the
+	// function tracer recurses into). Populated when a handler body
+	// contains direct calls matching sharedspec.IsAuthFunctionName.
+	AuthTokens []string
 
 	// Internal per-function state (used to improve inference)
 	jsonDecoderVars map[string]bool // vars assigned from json.NewDecoder(...)
@@ -67,6 +74,7 @@ func (ha *HandlerAnalyzer) AnalyzeHandler(funcDecl *ast.FuncDecl, file *ast.File
 		FormParams:       make([]ParamInfo, 0),
 		ErrorResponses:   make([]ErrorResponseInfo, 0),
 		SuccessResponses: make([]SuccessResponseInfo, 0),
+		ResponseHeaders:  make(map[string]string),
 		ResponseStatus:   200, // Default
 		jsonDecoderVars:  make(map[string]bool),
 	}
@@ -83,12 +91,19 @@ func (ha *HandlerAnalyzer) AnalyzeHandler(funcDecl *ast.FuncDecl, file *ast.File
 		return true
 	})
 
+	// Walk the call graph from this handler looking for auth-requirement
+	// calls; the FunctionTracer handles cycle detection and caching.
+	if ha.tracer != nil {
+		handlerInfo.AuthTokens = ha.tracer.CollectAuthTokens(funcDecl, info)
+	}
+
 	// Deduplicate error codes from detailed responses
 	ha.mergeErrorCodes(handlerInfo)
 
 	// Only return if we found something useful
 	if handlerInfo.RequestType != "" || handlerInfo.ResponseType != "" ||
-		len(handlerInfo.ErrorCodes) > 0 || len(handlerInfo.ErrorResponses) > 0 {
+		len(handlerInfo.ErrorCodes) > 0 || len(handlerInfo.ErrorResponses) > 0 ||
+		len(handlerInfo.AuthTokens) > 0 || len(handlerInfo.ResponseHeaders) > 0 {
 		return handlerInfo
 	}
 
@@ -188,6 +203,8 @@ func (ha *HandlerAnalyzer) analyzeCall(call *ast.CallExpr, handlerInfo *HandlerI
 		if contentType != "" {
 			handlerInfo.ContentType = contentType
 		}
+	case ha.isResponseHeaderSetCall(call):
+		ha.extractResponseHeader(call, handlerInfo)
 
 	case ha.isWriteCall(call, info):
 		// Plain writes (often text/plain). Capture content type + response body shape.
@@ -1109,9 +1126,9 @@ func (ha *HandlerAnalyzer) isContentTypeSetCall(call *ast.CallExpr) bool {
 		return false
 	}
 
-		if sel.Sel.Name != "Set" && sel.Sel.Name != "Add" {
-			return false
-		}
+	if sel.Sel.Name != "Set" && sel.Sel.Name != "Add" {
+		return false
+	}
 
 	// Check if we have at least 2 arguments and first is "Content-Type"
 	if len(call.Args) < 2 {
@@ -1137,6 +1154,50 @@ func (ha *HandlerAnalyzer) extractContentType(call *ast.CallExpr) string {
 	}
 
 	return ""
+}
+
+// isResponseHeaderSetCall checks if a handler sets a concrete response header.
+// Pattern: w.Header().Set("X-Header", "...") or w.Header().Add("X-Header", "...").
+func (ha *HandlerAnalyzer) isResponseHeaderSetCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	if sel.Sel.Name != "Set" && sel.Sel.Name != "Add" {
+		return false
+	}
+	if len(call.Args) < 2 {
+		return false
+	}
+	innerCall, ok := sel.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	innerSel, ok := innerCall.Fun.(*ast.SelectorExpr)
+	if !ok || innerSel.Sel.Name != "Header" {
+		return false
+	}
+	headerName := stringLiteral(call.Args[0])
+	return headerName != "" && !strings.EqualFold(headerName, "Content-Type")
+}
+
+func (ha *HandlerAnalyzer) extractResponseHeader(call *ast.CallExpr, handlerInfo *HandlerInfo) {
+	headerName := stringLiteral(call.Args[0])
+	if headerName == "" {
+		return
+	}
+	if handlerInfo.ResponseHeaders == nil {
+		handlerInfo.ResponseHeaders = make(map[string]string)
+	}
+	handlerInfo.ResponseHeaders[headerName] = headerName
+}
+
+func stringLiteral(expr ast.Expr) string {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return ""
+	}
+	return strings.Trim(lit.Value, "\"'`")
 }
 
 // ============================

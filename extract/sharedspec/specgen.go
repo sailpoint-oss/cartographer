@@ -78,16 +78,28 @@ func GenerateSpec(result *specmodel.Result, cfg specmodel.SpecConfig, adapter La
 		spec["tags"] = tags
 	}
 
+	// Guarantee every local schema $ref and component key is a valid OpenAPI
+	// name before stubbing missing refs. Unresolved generic expressions
+	// (e.g. "Supplier<List<String>>") would otherwise emit invalid bracketed
+	// JSON pointers that break ref resolution for the whole document.
+	SanitizeSchemaRefs(spec)
+
+	// Lift any "$ref" that sits beside sibling keys (commonly the x-source
+	// provenance extension on a type-referencing field) into a valid allOf.
+	// A bare $ref with siblings is invalid under OpenAPI 3.0 and aborts
+	// whole-document ref resolution in strict parsers.
+	WrapRefSiblings(spec)
+
 	EnsureSchemaRefsExist(spec)
 
 	if cfg.TreeShake {
 		TreeShake(spec)
 	}
 
-	if cfg.AuthScope.Enabled {
-		st := authscope.EnrichSpec(spec, cfg.AuthScope, false)
-		authscope.MergeDiagnostics(spec, st)
-	}
+	// Ensure components.securitySchemes.oauth2 lists every scope observed
+	// on any operation's security block. Cartographer no longer translates
+	// or relabels these tokens; consumers decide downstream.
+	_ = authscope.EnrichSpec(spec)
 
 	return spec
 }
@@ -181,6 +193,8 @@ func buildOperation(op *specmodel.Operation, result *specmodel.Result, cfg specm
 		}
 	}
 
+	op.Parameters = EnsurePathParameters(op.Path, op.Parameters)
+
 	// Parameters — sort deterministically by (in, name) for consistent output
 	if len(op.Parameters) > 0 {
 		sortedParams := make([]*specmodel.Parameter, len(op.Parameters))
@@ -260,6 +274,9 @@ func buildOperation(op *specmodel.Operation, result *specmodel.Result, cfg specm
 		if result != nil && result.Types != nil {
 			schema = enrichBodySchema(adapter, op.RequestBodyType, schema, result.Types)
 		}
+		if schema != nil {
+			schema = wrapSchemaRefSiblings(schema)
+		}
 		contentType := "application/json"
 		if op.ConsumesContentType != "" {
 			contentType = op.ConsumesContentType
@@ -269,6 +286,9 @@ func buildOperation(op *specmodel.Operation, result *specmodel.Result, cfg specm
 		}
 		// Strip readOnly properties from request body schemas
 		schema = stripReadOnlyProps(schema)
+		if len(op.FormParams) > 0 && contentType == "multipart/form-data" {
+			schema = mergeFormParamsIntoObjectSchema(schema, op.FormParams, adapter)
+		}
 		reqBody := map[string]any{
 			"required": true,
 			"content": map[string]any{
@@ -337,15 +357,15 @@ func buildOperation(op *specmodel.Operation, result *specmodel.Result, cfg specm
 		operation["x-rate-limited"] = true
 	}
 
-	// Security: translate AMS rights to PAT scopes when enabled.
-	rights := append([]string(nil), op.Rights...)
-	if len(rights) == 0 {
-		for _, sec := range op.Security {
-			rights = append(rights, sec.Scopes...)
-		}
+	// Security: emit every extracted auth token as standard OAuth2 scopes
+	// in the operation's security block. No translation, no auth-flavoured
+	// extensions; consumers decide downstream what each token means.
+	var tokens []string
+	for _, sec := range op.Security {
+		tokens = append(tokens, sec.Scopes...)
 	}
-	if cfg.AuthScope.Enabled && cfg.AuthScope.Mapping != nil && len(rights) > 0 {
-		authscope.ApplyToOperation(operation, rights, cfg.AuthScope)
+	if len(tokens) > 0 {
+		authscope.ApplyToOperation(operation, tokens)
 	} else if len(op.Security) > 0 {
 		var secList []any
 		for _, sec := range op.Security {
@@ -361,6 +381,80 @@ func buildOperation(op *specmodel.Operation, result *specmodel.Result, cfg specm
 	}
 
 	return operation
+}
+
+func mergeFormParamsIntoObjectSchema(schema map[string]any, formParams []*specmodel.Parameter, adapter LanguageAdapter) map[string]any {
+	if len(formParams) == 0 {
+		return schema
+	}
+	if schema == nil {
+		schema = map[string]any{"type": "object"}
+	}
+	if _, hasRef := schema["$ref"]; hasRef {
+		formSchema := formParamsObjectSchema(formParams, adapter)
+		if formSchema == nil {
+			return schema
+		}
+		return map[string]any{"allOf": []any{schema, formSchema}}
+	}
+	props, _ := schema["properties"].(map[string]any)
+	if props == nil {
+		props = map[string]any{}
+		schema["properties"] = props
+	}
+	requiredSet := map[string]bool{}
+	var required []any
+	if existing, ok := schema["required"].([]any); ok {
+		required = append(required, existing...)
+		for _, item := range existing {
+			if s, ok := item.(string); ok {
+				requiredSet[s] = true
+			}
+		}
+	}
+	for _, fp := range formParams {
+		if fp == nil || fp.Name == "" {
+			continue
+		}
+		propSchema := adapter.FormParamSchema(fp.Type)
+		applyParamConstraints(propSchema, fp)
+		props[fp.Name] = propSchema
+		if fp.Required && !requiredSet[fp.Name] {
+			required = append(required, fp.Name)
+			requiredSet[fp.Name] = true
+		}
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
+}
+
+func formParamsObjectSchema(formParams []*specmodel.Parameter, adapter LanguageAdapter) map[string]any {
+	props := map[string]any{}
+	var required []any
+	for _, fp := range formParams {
+		if fp == nil || fp.Name == "" {
+			continue
+		}
+		propSchema := adapter.FormParamSchema(fp.Type)
+		applyParamConstraints(propSchema, fp)
+		props[fp.Name] = propSchema
+		if fp.Required {
+			required = append(required, fp.Name)
+		}
+	}
+	if len(props) == 0 {
+		return nil
+	}
+	schema := map[string]any{
+		"type":       "object",
+		"properties": props,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
 }
 
 func buildParameter(p *specmodel.Parameter, schema map[string]any) map[string]any {
@@ -425,10 +519,8 @@ func buildResponses(op *specmodel.Operation, result *specmodel.Result, cfg specm
 		if responseStr != "" && responseStr != "Void" && responseStr != "Response" && responseStr != "void" {
 			var schema map[string]any
 			if result != nil && result.Schemas != nil {
-				if indexed, ok := result.Schemas[responseStr]; ok {
-					if m, ok2 := indexed.(map[string]any); ok2 {
-						schema = m
-					}
+				if _, ok := result.Schemas[responseStr]; ok {
+					schema = map[string]any{"$ref": "#/components/schemas/" + responseStr}
 				}
 			}
 			if schema == nil {
@@ -446,6 +538,7 @@ func buildResponses(op *specmodel.Operation, result *specmodel.Result, cfg specm
 					schema["nullable"] = true
 				}
 			}
+			schema = wrapSchemaRefSiblings(schema)
 			contentType := "application/json"
 			if op.ProducesContentType != "" {
 				contentType = op.ProducesContentType
@@ -470,10 +563,8 @@ func buildResponses(op *specmodel.Operation, result *specmodel.Result, cfg specm
 			// Prefer pre-computed schemas (WITH validation annotations from index resolver)
 			var arSchema map[string]any
 			if result != nil && result.Schemas != nil {
-				if indexed, ok := result.Schemas[ar.SchemaType]; ok {
-					if m, ok2 := indexed.(map[string]any); ok2 {
-						arSchema = m
-					}
+				if _, ok := result.Schemas[ar.SchemaType]; ok {
+					arSchema = map[string]any{"$ref": "#/components/schemas/" + ar.SchemaType}
 				}
 			}
 			if arSchema == nil {
@@ -625,20 +716,8 @@ func buildComponents(result *specmodel.Result, cfg specmodel.SpecConfig, adapter
 	// the additional constraints (nullable, description, etc.).
 	for name, raw := range schemas {
 		if m, ok := raw.(map[string]any); ok {
-			if ref, hasRef := m["$ref"]; hasRef && len(m) > 1 {
-				siblings := make(map[string]any)
-				for k, v := range m {
-					if k != "$ref" {
-						siblings[k] = v
-					}
-				}
-				wrapped := map[string]any{
-					"allOf": []any{map[string]any{"$ref": ref}},
-				}
-				for k, v := range siblings {
-					wrapped[k] = v
-				}
-				schemas[name] = wrapped
+			if _, hasRef := m["$ref"]; hasRef && len(m) > 1 {
+				schemas[name] = wrapSchemaRefSiblings(m)
 			}
 		}
 	}
@@ -870,7 +949,7 @@ var formatExamples = map[string]string{
 	"uri":       "https://example.com",
 	"date":      "2024-01-15",
 	"date-time": "2024-01-15T09:30:00Z",
-	"ipv4":      "192.168.1.1",
+	"ipv4":      "203.0.113.1",
 	"ipv6":      "::1",
 	"hostname":  "example.com",
 }

@@ -21,12 +21,10 @@ func (r *Result) ToUnifiedResult() *specmodel.Result {
 			})
 		}
 		var security []specmodel.SecurityRequirement
-		var rights []string
 		if len(op.Security) > 0 {
-			var oauthScopes []string
-			rights, oauthScopes = authscope.PartitionTokens(op.Security, nil)
-			if len(oauthScopes) > 0 {
-				security = append(security, specmodel.SecurityRequirement{Scheme: "oauth2", Scopes: oauthScopes})
+			scopes := authscope.Normalize(op.Security)
+			if len(scopes) > 0 {
+				security = append(security, specmodel.SecurityRequirement{Scheme: "oauth2", Scopes: scopes})
 			}
 		}
 		ops = append(ops, &specmodel.Operation{
@@ -40,8 +38,8 @@ func (r *Result) ToUnifiedResult() *specmodel.Result {
 			RequestBodyType: op.RequestBodyType,
 			ResponseType:    op.ResponseType,
 			ResponseStatus:  op.ResponseStatus,
+			ResponseHeaders: op.ResponseHeaders,
 			Security:        security,
-			Rights:          rights,
 			File:            op.File,
 			Line:            op.Line,
 			Column:          op.Column,

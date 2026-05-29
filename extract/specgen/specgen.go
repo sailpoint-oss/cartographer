@@ -30,7 +30,6 @@ type Config struct {
 	IncludeWebhooks    bool   // Include webhook documentation (OpenAPI 3.1+)
 	WebhookFilter      string // Regex pattern to filter webhooks by name
 	TreeShake          bool   // Remove unused schemas from output
-	AuthScope          authscope.ApplyOptions
 }
 
 // Generate generates an OpenAPI specification from extracted metadata.
@@ -49,16 +48,16 @@ func Generate(metadata *goextract.ExtractedMetadata, extractor *goextract.Extrac
 		sharedspec.TreeShake(spec)
 	}
 
-	if cfg.AuthScope.Enabled {
-		anySpec := make(map[string]any)
-		for k, v := range spec {
-			anySpec[k] = v
-		}
-		st := authscope.EnrichSpec(anySpec, cfg.AuthScope, false)
-		authscope.MergeDiagnostics(anySpec, st)
-		for k, v := range anySpec {
-			spec[k] = v
-		}
+	// Ensure components.securitySchemes.oauth2 lists every scope observed
+	// on any operation's security block. Cartographer no longer translates
+	// or relabels these tokens; consumers decide downstream.
+	anySpec := make(map[string]any)
+	for k, v := range spec {
+		anySpec[k] = v
+	}
+	_ = authscope.EnrichSpec(anySpec)
+	for k, v := range anySpec {
+		spec[k] = v
 	}
 
 	return spec
@@ -455,78 +454,18 @@ func generateStatusCodeErrorSchemas(schemas map[string]interface{}, operations m
 		}
 	}
 
-	errorSchema := errorSchemaAnalyzer.GetErrorSchema()
-	locale := "en-US"
-	localeOrigin := "DEFAULT"
-
-	if errorSchema != nil {
-		if msgSchema, ok := errorSchema.NestedSchemas["messages"]; ok {
-			if localeVal, ok := msgSchema.ConstantFields["locale"].(string); ok {
-				locale = localeVal
-			}
-			if localeOriginVal, ok := msgSchema.ConstantFields["localeOrigin"].(string); ok {
-				localeOrigin = localeOriginVal
-			}
-		}
-	}
-
+	// Cartographer no longer fabricates a vendor-shaped error envelope. It
+	// emits a neutral placeholder per status code, marked with the stub name
+	// "LegacyErrorResponse" so a downstream consumer overlay can resolve it
+	// into a concrete shape (e.g. RFC 7807 Problem Details, or a vendor's
+	// own legacy DTO) without that vocabulary living in the public extractor.
+	_ = errorSchemaAnalyzer
 	for statusCode := range statusCodesUsed {
 		schemaName := getErrorSchemaName(statusCode)
-
-		exampleText := getStatusDescription(statusCode)
-		if examples, hasExamples := statusCodeExamples[statusCode]; hasExamples && len(examples) > 0 {
-			exampleText = examples[0]
-		}
-
-		messageSchema := map[string]interface{}{
-			"type":     "object",
-			"required": []string{"locale", "text"},
-			"properties": map[string]interface{}{
-				"locale": map[string]interface{}{
-					"type":        "string",
-					"description": "Locale of the message",
-					"const":       locale,
-					"default":     locale,
-					"example":     locale,
-				},
-				"localeOrigin": map[string]interface{}{
-					"type":        "string",
-					"description": "Origin of the locale",
-					"const":       localeOrigin,
-					"default":     localeOrigin,
-					"example":     localeOrigin,
-				},
-				"text": map[string]interface{}{
-					"type":        "string",
-					"description": "The error message text",
-					"example":     exampleText,
-				},
-			},
-		}
-
 		schemas[schemaName] = map[string]interface{}{
 			"type":        "object",
-			"required":    []string{"detailCode", "messages"},
-			"description": fmt.Sprintf("Error response for HTTP %d (%s)", statusCode, getHttpStatusText(statusCode)),
-			"properties": map[string]interface{}{
-				"detailCode": map[string]interface{}{
-					"type":        "string",
-					"description": "HTTP status text",
-					"const":       getHttpStatusText(statusCode),
-					"default":     getHttpStatusText(statusCode),
-					"example":     getHttpStatusText(statusCode),
-				},
-				"trackingId": map[string]interface{}{
-					"type":        "string",
-					"description": "Unique identifier for tracing the request",
-					"example":     "a1b2c3d4-e5f6-4g7h-8i9j-0k1l2m3n4o5p",
-				},
-				"messages": map[string]interface{}{
-					"type":        "array",
-					"description": "Array of localized error messages",
-					"items":       messageSchema,
-				},
-			},
+			"description": fmt.Sprintf("Error response for HTTP %d (%s) - resolved by consumer overlay", statusCode, getHttpStatusText(statusCode)),
+			"x-source":    map[string]interface{}{"stubName": "LegacyErrorResponse"},
 		}
 	}
 }
@@ -708,16 +647,7 @@ func buildOperation(op *goextract.OperationInfo, cfg Config, schemaNameNormalize
 		operation["x-internal"] = true
 	}
 
-	// Source location extensions
-	if op.File != "" {
-		operation["x-source-file"] = op.File
-	}
-	if op.Line > 0 {
-		operation["x-source-line"] = op.Line
-	}
-	if op.Column > 0 {
-		operation["x-source-column"] = op.Column
-	}
+	sourceloc.Location{File: op.File, Line: op.Line, Column: op.Column}.ApplyTo(operation)
 
 	// Parameters
 	params := make([]interface{}, 0)
@@ -885,6 +815,7 @@ func buildOperation(op *goextract.OperationInfo, cfg Config, schemaNameNormalize
 					},
 				},
 			}
+			attachResponseHeaders(responses[statusCode].(map[string]interface{}), op.ResponseHeaders)
 		} else {
 			schemaObj := buildOperationResponseSchema(op.ResponseType, schemaNameNormalizer)
 			responses[statusCode] = map[string]interface{}{
@@ -895,6 +826,7 @@ func buildOperation(op *goextract.OperationInfo, cfg Config, schemaNameNormalize
 					},
 				},
 			}
+			attachResponseHeaders(responses[statusCode].(map[string]interface{}), op.ResponseHeaders)
 		}
 	} else if len(op.SuccessResponses) > 0 {
 		for _, resp := range op.SuccessResponses {
@@ -910,6 +842,7 @@ func buildOperation(op *goextract.OperationInfo, cfg Config, schemaNameNormalize
 					mediaType: map[string]interface{}{"schema": schemaObj},
 				},
 			}
+			attachResponseHeaders(responses[statusCode].(map[string]interface{}), op.ResponseHeaders)
 		}
 	}
 
@@ -994,6 +927,7 @@ func buildOperation(op *goextract.OperationInfo, cfg Config, schemaNameNormalize
 			}
 		}
 
+		attachResponseHeaders(resp, op.ResponseHeaders)
 		responses[statusCode] = resp
 	}
 
@@ -1006,37 +940,20 @@ func buildOperation(op *goextract.OperationInfo, cfg Config, schemaNameNormalize
 		operation["responses"] = responses
 	}
 
-	// Security -- translate rights to PAT scopes when auth mapping is enabled.
+	// Security: surface every extracted auth token as standard OAuth2
+	// scope requirements. Cartographer does NOT translate the strings; a
+	// downstream consumer overlay is responsible for recognising tokens
+	// that are actually rights / permissions and translating them.
 	if op.Unprotected {
 		operation["security"] = []interface{}{}
 	} else if op.RequiresAuth && len(op.Rights) > 0 {
-		if cfg.AuthScope.Enabled && cfg.AuthScope.Mapping != nil {
-			anyOp := make(map[string]any)
-			for k, v := range operation {
-				anyOp[k] = v
-			}
-			authscope.ApplyToOperation(anyOp, op.Rights, cfg.AuthScope)
-			for k, v := range anyOp {
-				operation[k] = v
-			}
-		} else {
-			secReqs := []interface{}{}
-			if op.UserAuth {
-				secReqs = append(secReqs, map[string]interface{}{
-					"userAuth": op.Rights,
-				})
-			}
-			if op.ApplicationAuth {
-				secReqs = append(secReqs, map[string]interface{}{
-					"applicationAuth": op.Rights,
-				})
-			}
-			if len(secReqs) == 0 {
-				secReqs = append(secReqs, map[string]interface{}{
-					"oauth2": op.Rights,
-				})
-			}
-			operation["security"] = secReqs
+		anyOp := make(map[string]any)
+		for k, v := range operation {
+			anyOp[k] = v
+		}
+		authscope.ApplyToOperation(anyOp, op.Rights)
+		for k, v := range anyOp {
+			operation[k] = v
 		}
 	}
 	if op.UserAuth {
@@ -1164,6 +1081,29 @@ func methodDisallowsRequestBody(method string) bool {
 	return m == "GET" || m == "HEAD"
 }
 
+func attachResponseHeaders(response map[string]interface{}, headers map[string]string) {
+	if len(response) == 0 || len(headers) == 0 {
+		return
+	}
+	headerObjs, _ := response["headers"].(map[string]interface{})
+	if headerObjs == nil {
+		headerObjs = make(map[string]interface{})
+		response["headers"] = headerObjs
+	}
+	for name, desc := range headers {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		if desc == "" {
+			desc = name
+		}
+		headerObjs[name] = map[string]interface{}{
+			"description": desc,
+			"schema":      sharedspec.HeaderTypeSchema(name),
+		}
+	}
+}
+
 // buildSchema builds an OpenAPI schema from TypeInfo.
 func buildSchema(typeInfo *goextract.TypeInfo) map[string]interface{} {
 	schema := map[string]interface{}{
@@ -1206,6 +1146,7 @@ func buildSchema(typeInfo *goextract.TypeInfo) map[string]interface{} {
 			}
 
 			applyValidationTags(field.Tags, fieldSchema, &required, jsonName)
+			sourceloc.Location{File: field.File, Line: field.Line, Column: field.Column}.ApplyTo(fieldSchema)
 
 			properties[jsonName] = fieldSchema
 

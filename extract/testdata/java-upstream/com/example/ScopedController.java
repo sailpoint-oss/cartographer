@@ -1,5 +1,6 @@
 package com.example;
 
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestMapping;
 import java.util.List;
@@ -9,7 +10,7 @@ import java.util.List;
 public class ScopedController {
 
     @org.springframework.web.bind.annotation.GetMapping("/entries")
-    @RequireRight("example:resource:read")
+    @PreAuthorize("hasAuthority('example:resource:read')")
     public List<String> listEntries() {
         return null;
     }

@@ -17,21 +17,13 @@ type ExtractionConfig struct {
 	ErrorSchema              string   `yaml:"errorSchema,omitempty"`
 	SignaturePaginationTypes []string `yaml:"signaturePaginationTypes,omitempty"`
 	MergeCoLocatedOpenAPI    bool     `yaml:"mergeCoLocatedOpenAPI,omitempty"`
-	AuthScopeTranslation     *bool    `yaml:"authScopeTranslation,omitempty"`
-	AMSMappingPath           string   `yaml:"amsMappingPath,omitempty"`
 }
 
 func (c ExtractionConfig) Options() extractionopts.Options {
-	enableAuth := true
-	if c.AuthScopeTranslation != nil {
-		enableAuth = *c.AuthScopeTranslation
-	}
 	return extractionopts.Options{
-		ErrorSchema:                c.ErrorSchema,
-		SignaturePaginationTypes:   c.SignaturePaginationTypes,
-		MergeCoLocatedOpenAPI:      c.MergeCoLocatedOpenAPI,
-		EnableAuthScopeTranslation: enableAuth,
-		AMSMappingPath:             c.AMSMappingPath,
+		ErrorSchema:              c.ErrorSchema,
+		SignaturePaginationTypes: c.SignaturePaginationTypes,
+		MergeCoLocatedOpenAPI:    c.MergeCoLocatedOpenAPI,
 	}
 }
 

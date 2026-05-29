@@ -1,5 +1,12 @@
 // Package testutil provides golden-file (snapshot) testing utilities
 // for OpenAPI spec generation tests.
+//
+// Update committed golden YAML from the cartographer module root:
+//
+//	go test ./extract -run TestGoldenSpecs -update -count=1
+//
+// Golden files live under extract/testdata/golden/. Use fictional com.example /
+// example.com fixtures only (see docs/ANONYMIZATION.md).
 package testutil
 
 import (
@@ -14,6 +21,10 @@ import (
 )
 
 var update = flag.Bool("update", false, "update golden files")
+
+func goldenUpdateEnabled() bool {
+	return *update && os.Getenv("CI") == ""
+}
 
 // Option configures golden file comparison.
 type Option func(*config)
@@ -41,15 +52,39 @@ func WithNormalize(fns ...NormalizeFunc) Option {
 	}
 }
 
-// StripSourceLocations removes x-source-file, x-source-line, x-source-column
-// from all nested maps for deterministic comparison.
+// StripSourceLocations removes source location metadata from all nested maps
+// for deterministic comparison while preserving non-location x-source fields
+// such as stubName.
 func StripSourceLocations(m map[string]any) {
 	stripSourceLocsRecursive(m)
+}
+
+// StripDiagnostics removes info.x-cartographer-diagnostics so golden files
+// stay stable when controller/operation counts change without spec shape changes.
+func StripDiagnostics(m map[string]any) {
+	info, ok := m["info"].(map[string]any)
+	if !ok {
+		return
+	}
+	delete(info, "x-cartographer-diagnostics")
+}
+
+// DefaultE2ENormalizers returns normalizers used by full-spec golden tests.
+func DefaultE2ENormalizers() []NormalizeFunc {
+	return []NormalizeFunc{StripSourceLocations, StripDiagnostics}
 }
 
 func stripSourceLocsRecursive(v any) {
 	switch val := v.(type) {
 	case map[string]any:
+		if source, ok := val["x-source"].(map[string]any); ok {
+			delete(source, "file")
+			delete(source, "line")
+			delete(source, "column")
+			if len(source) == 0 {
+				delete(val, "x-source")
+			}
+		}
 		delete(val, "x-source-file")
 		delete(val, "x-source-line")
 		delete(val, "x-source-column")
@@ -63,7 +98,7 @@ func stripSourceLocsRecursive(v any) {
 	}
 }
 
-// NormalizeSourcePaths strips temp directory prefixes from x-source-file values,
+// NormalizeSourcePaths strips temp directory prefixes from x-source.file values,
 // keeping only the relative path from the last known directory segment.
 func NormalizeSourcePaths(m map[string]any) {
 	normalizeSourcePathsRecursive(m)
@@ -72,6 +107,13 @@ func NormalizeSourcePaths(m map[string]any) {
 func normalizeSourcePathsRecursive(v any) {
 	switch val := v.(type) {
 	case map[string]any:
+		if source, ok := val["x-source"].(map[string]any); ok {
+			if sf, ok := source["file"].(string); ok {
+				if idx := strings.Index(sf, "testdata/"); idx >= 0 {
+					source["file"] = sf[idx:]
+				}
+			}
+		}
 		if sf, ok := val["x-source-file"].(string); ok {
 			// Keep only the path after the last "testdata/" segment
 			if idx := strings.Index(sf, "testdata/"); idx >= 0 {
@@ -122,7 +164,11 @@ func AssertGolden(t *testing.T, goldenPath string, actual map[string]any, opts .
 		t.Fatalf("marshal actual: %v", err)
 	}
 
-	if *update {
+	if *update && !goldenUpdateEnabled() {
+		t.Fatal("refusing to update golden files when CI is set; run locally with -update")
+	}
+
+	if goldenUpdateEnabled() {
 		dir := filepath.Dir(goldenPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create golden dir: %v", err)

@@ -1,0 +1,92 @@
+# Shape-only leak-guard patterns. Every entry describes a UNIVERSAL form an
+# accidentally-pasted internal identifier might take. The file itself contains
+# no internal vocabulary: it is safe to commit to public repos.
+#
+# Severity levels: "error" (fail CI), "warning" (informational).
+
+patterns:
+  - id: three-segment-colon-scope
+    description: >-
+      Three-segment colon-delimited identifier outside the documented public
+      placeholder namespace. Real internal scope prefixes are typically NOT
+      "api:" (the public testdata convention), so allowing api:*:* and a few
+      other generic placeholders here still catches anything in the shape of
+      a real OAuth scope or right identifier that leaks into public code.
+    regex: '\b[a-z][a-z0-9-]*:[a-z0-9][a-z0-9-]*:[a-z0-9-]+\b'
+    exclude_prefixes:
+      - 'api:'
+      - 'example:'
+      - 'examples:'
+      - 'sample:'
+      - 'placeholder:'
+      - 'test:'
+      - 'mock:'
+      - 'unknown:'
+      - 'openapi:tag:'
+      - 'openapi:webhook:'
+      - 'openapi:webhook'
+      - 'urn:'
+      # Generic placeholder prefixes that appear in published OpenAPI
+      # fixtures and unit-test bodies as descriptive labels rather than
+      # real OAuth scopes (e.g. "field:operator:value", "status:eq:active").
+      - 'identity:'
+      - 'catalog:'
+      - 'system:'
+      - 'field:'
+      - 'status:'
+      - 'schema:'
+      - 'profile:'
+      # Vendored third-party OpenAPI fixtures may include MPEG-DASH /
+      # XMPP-style URN namespaces that look like three-segment scopes but
+      # are public-internet specifications.
+      - 'tag:'
+      - 'http:'
+      - 'https:'
+    severity: error
+
+  - id: internal-comment-marker
+    description: >-
+      Comment marker conventionally used to flag internal-only prose
+      (HTML/markdown style).
+    regex: '<!--\s*internal\s*-->'
+    severity: warning
+
+  - id: todo-internal-link
+    description: >-
+      TODO/FIXME comment that points at an internal-looking JIRA, Confluence,
+      Slack, or wiki path.
+    regex: '(?i)(?:TODO|FIXME|XXX)[^\n]*(?:atlassian\.net|jira\.|confluence\.|slack-archive\.|workplace\.|sharepoint\.|github\.com/[a-z0-9-]+-internal/)'
+    severity: warning
+
+  - id: private-org-pat
+    description: >-
+      Personal-access-token style string with a private prefix
+      (e.g. ghp_, glpat-, sk-live-, sk_live_, xoxp-, AKIA...).
+    regex: '\b(?:ghp_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_\-]{20,}|sk-live-[A-Za-z0-9]{20,}|sk_live_[A-Za-z0-9]{20,}|xoxp-[A-Za-z0-9-]{20,}|AKIA[A-Z0-9]{16})\b'
+    severity: error
+
+  - id: aws-style-arn
+    description: >-
+      AWS ARN containing what looks like an account ID (12-digit number);
+      account IDs are not technically secret but are often org-specific.
+    regex: 'arn:aws[a-z0-9-]*:[a-z0-9-]+:[a-z0-9-]*:[0-9]{12}:'
+    severity: warning
+
+  - id: rfc1918-cidr
+    description: >-
+      Private-network IPv4 literal. Production infra rarely belongs in OSS
+      examples; placeholders should use 192.0.2.0/24 (RFC 5737) instead.
+    regex: '\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b'
+    severity: warning
+
+  - id: jwt-shape
+    description: >-
+      Three base64url segments separated by dots that look like a JWT.
+    regex: '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b'
+    severity: error
+
+  - id: pem-private-key
+    description: >-
+      PEM-encoded private key block header.
+    regex: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----'
+    severity: error

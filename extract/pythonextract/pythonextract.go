@@ -4,17 +4,17 @@
 // Supported web frameworks:
 //
 //   - FastAPI    — @app.get / @router.post / @router.api_route decorators on
-//                  functions, Pydantic BaseModel DTOs, typed path/query/body
-//                  parameters including `Annotated[X, Query(...)]` and
-//                  Depends(...) for auth dependencies.
+//     functions, Pydantic BaseModel DTOs, typed path/query/body
+//     parameters including `Annotated[X, Query(...)]` and
+//     Depends(...) for auth dependencies.
 //   - Starlette  — app.add_route / Route(path, handler, methods=[...]) and
-//                  @app.route / @router.route(... methods=...). Mount() is
-//                  followed for composed routers.
+//     @app.route / @router.route(... methods=...). Mount() is
+//     followed for composed routers.
 //   - Flask      — @app.route / @blueprint.route decorators with an optional
-//                  `methods=[...]` kwarg.
+//     `methods=[...]` kwarg.
 //   - Ariadne /  — GraphQL-only services are recognised and get a documented
-//                  GraphQL   `/graphql` POST endpoint plus any REST routes
-//                  (health, metrics, explorer) that the app exposes.
+//     GraphQL   `/graphql` POST endpoint plus any REST routes
+//     (health, metrics, explorer) that the app exposes.
 //
 // The extractor also reads pyproject.toml for service metadata (name,
 // version, description) so even GraphQL / worker services produce a valid,
@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/sailpoint-oss/cartographer/extract/index"
@@ -46,7 +47,7 @@ type Result struct {
 	Schemas    map[string]interface{}
 	Types      map[string]*index.TypeDecl
 	Metadata   ProjectMetadata
-	// Framework is one of "fastapi", "starlette", "flask", "ariadne", "".
+	// Framework is one of "fastapi", "starlette", "flask", "agent", "ariadne", "".
 	Framework string
 }
 
@@ -76,6 +77,7 @@ type Operation struct {
 	Security            []string
 	ConsumesContentType string
 	ProducesContentType string
+	ResponseHeaders     map[string]string
 	File                string
 	Line                int
 	Column              int
@@ -130,6 +132,7 @@ func Extract(cfg Config) (*Result, error) {
 			result.Framework = framework
 		}
 	}
+	result.Operations = dedupeOperations(result.Operations)
 
 	for _, decl := range idx.All() {
 		result.Schemas[decl.Name] = idx.ToOpenAPISchema(decl, nil)
@@ -150,12 +153,12 @@ func extractOperations(pool *parser.Pool, idx *index.Index, rootDir string, verb
 	var ops []*Operation
 	var framework string
 
-	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(rootDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() {
-			base := info.Name()
+		if entry.IsDir() {
+			base := entry.Name()
 			switch base {
 			case ".git", "__pycache__", ".venv", "venv", ".mypy_cache",
 				".pytest_cache", ".ruff_cache", ".tox", ".eggs",
@@ -181,9 +184,9 @@ func extractOperations(pool *parser.Pool, idx *index.Index, rootDir string, verb
 		if err != nil {
 			return nil
 		}
-		defer tree.Close()
 
 		func() {
+			defer tree.Close()
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(os.Stderr, "WARN: panic extracting operations from %s: %v\n", path, r)
@@ -191,6 +194,10 @@ func extractOperations(pool *parser.Pool, idx *index.Index, rootDir string, verb
 			}()
 			fileOps, frameworkDetected := extractFileOperations(tree.RootNode(), source, path, idx)
 			ops = append(ops, fileOps...)
+			if agentOps := extractAgentRegistrationOperations(source, path); len(agentOps) > 0 {
+				ops = append(ops, agentOps...)
+				framework = mergeFramework(framework, "agent")
+			}
 			if frameworkDetected != "" {
 				// Prefer FastAPI > Starlette > Flask > Ariadne when multiple
 				// frameworks co-exist (common during Flask→Starlette migrations).
@@ -205,11 +212,191 @@ func extractOperations(pool *parser.Pool, idx *index.Index, rootDir string, verb
 }
 
 func mergeFramework(current, detected string) string {
-	rank := map[string]int{"fastapi": 4, "starlette": 3, "flask": 2, "ariadne": 1}
+	rank := map[string]int{"fastapi": 5, "starlette": 4, "flask": 3, "agent": 2, "ariadne": 1}
 	if rank[detected] > rank[current] {
 		return detected
 	}
 	return current
+}
+
+var (
+	reRegisterAgentCall = regexp.MustCompile(`(?s)([A-Za-z_][A-Za-z0-9_\.]*)\.register_agent\(\s*("[^"]*"|'[^']*')`)
+	// register_task(path="/svc/op", task=...) or register_task("/svc/op", ...).
+	// The path is the first argument (positional or the `path=` keyword), so a
+	// non-greedy scan to the first string literal is sufficient and avoids the
+	// nested parens of the trailing task=factory() argument.
+	reRegisterTaskCall = regexp.MustCompile(`\.register_task\(\s*(?:path\s*=\s*)?("[^"]*"|'[^']*')`)
+	// Single-agent A2A bootstraps that mount the agent at the service root with
+	// no explicit register_agent/register_task call: a hand-built
+	// A2AStarletteApplication(...) or TemplateAgent(...).arun_server_*().
+	reA2AStarletteApp    = regexp.MustCompile(`\bA2AStarletteApplication\(`)
+	reTemplateAgentIdent = regexp.MustCompile(`\bTemplateAgent\b`)
+	reAgentServeCall     = regexp.MustCompile(`\.arun_server_(?:deployed|local)\(`)
+)
+
+// extractAgentRegistrationOperations detects generic SP-agent / A2A server
+// surfaces. It keys off framework registration shapes (register_agent,
+// register_task) and single-agent A2A bootstraps, never off a service or
+// package name. The synthesised operations describe the agent's HTTP contract
+// (A2A message stream + agent card, or a task invocation endpoint).
+func extractAgentRegistrationOperations(source []byte, filePath string) []*Operation {
+	text := string(source)
+	var ops []*Operation
+
+	// Explicit agent mounts: server.register_agent("/embedded", agent).
+	for _, loc := range reRegisterAgentCall.FindAllStringSubmatchIndex(text, -1) {
+		mount := normalisePath(trimQuotes(text[loc[4]:loc[5]]))
+		if mount == "" {
+			mount = "/"
+		}
+		line, col := lineColumnAtOffset(text, loc[0])
+		ops = append(ops,
+			agentStreamOperation(mount, filePath, line, col),
+			agentCardOperation(mount, filePath, line, col),
+		)
+	}
+
+	// Explicit task mounts: server.register_task(path="/svc/op", task=...).
+	for _, loc := range reRegisterTaskCall.FindAllStringSubmatchIndex(text, -1) {
+		taskPath := normalisePath(trimQuotes(text[loc[2]:loc[3]]))
+		if taskPath == "" {
+			continue
+		}
+		line, col := lineColumnAtOffset(text, loc[0])
+		ops = append(ops, agentTaskOperation(taskPath, filePath, line, col))
+	}
+
+	// Implicit single-agent A2A bootstrap with no explicit registration: the
+	// agent is served at the root mount. Gated on a true A2A signal
+	// (A2AStarletteApplication, or TemplateAgent served via arun_server_*) so a
+	// task-only server (SPServer + register_task in another file) does not get a
+	// spurious root agent surface.
+	if len(ops) == 0 && isSingleAgentBootstrap(text) {
+		loc := reAgentServeCall.FindStringIndex(text)
+		if loc == nil {
+			loc = reA2AStarletteApp.FindStringIndex(text)
+		}
+		line, col := lineColumnAtOffset(text, loc[0])
+		ops = append(ops,
+			agentStreamOperation("/", filePath, line, col),
+			agentCardOperation("/", filePath, line, col),
+		)
+	}
+
+	return ops
+}
+
+// isSingleAgentBootstrap reports whether the file builds/serves a single A2A
+// agent at the root without an explicit register_agent/register_task call.
+func isSingleAgentBootstrap(text string) bool {
+	if reA2AStarletteApp.MatchString(text) {
+		return true
+	}
+	return reTemplateAgentIdent.MatchString(text) && reAgentServeCall.MatchString(text)
+}
+
+// agentTaskOperation synthesises the POST endpoint for an SP-agent task mount.
+func agentTaskOperation(taskPath, filePath string, line, col int) *Operation {
+	return &Operation{
+		Path:                taskPath,
+		Method:              "POST",
+		OperationID:         agentOperationID("post", taskPath, "Task"),
+		Summary:             "Invoke agent task",
+		Description:         "Invokes the agent task registered at this mount path.",
+		Tags:                []string{"agent"},
+		ConsumesContentType: "application/json",
+		ProducesContentType: "application/json",
+		File:                filePath,
+		Line:                line,
+		Column:              col,
+	}
+}
+
+func agentStreamOperation(mount, filePath string, line, col int) *Operation {
+	return &Operation{
+		Path:                mount,
+		Method:              "POST",
+		OperationID:         agentOperationID("post", mount, "Agent"),
+		Summary:             "Send an agent message",
+		Description:         "Streams a message to the agent registered at this mount path.",
+		Tags:                []string{"agent"},
+		ConsumesContentType: "application/json",
+		ProducesContentType: "text/event-stream",
+		File:                filePath,
+		Line:                line,
+		Column:              col,
+	}
+}
+
+func agentCardOperation(mount, filePath string, line, col int) *Operation {
+	return &Operation{
+		Path:                joinURLPath(mount, "/.well-known/agent.json"),
+		Method:              "GET",
+		OperationID:         agentOperationID("get", mount, "AgentCard"),
+		Summary:             "Get the agent card",
+		Description:         "Returns metadata for the agent registered at this mount path.",
+		Tags:                []string{"agent"},
+		ProducesContentType: "application/json",
+		File:                filePath,
+		Line:                line,
+		Column:              col,
+	}
+}
+
+func agentOperationID(prefix, mount, suffix string) string {
+	mount = strings.Trim(mount, "/")
+	if mount == "" {
+		return prefix + suffix
+	}
+	parts := strings.FieldsFunc(mount, func(r rune) bool {
+		return r == '-' || r == '_' || r == '/'
+	})
+	var b strings.Builder
+	b.WriteString(prefix)
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		b.WriteString(strings.ToUpper(part[:1]))
+		if len(part) > 1 {
+			b.WriteString(part[1:])
+		}
+	}
+	b.WriteString(suffix)
+	return b.String()
+}
+
+func lineColumnAtOffset(text string, offset int) (int, int) {
+	line, col := 1, 1
+	if offset > len(text) {
+		offset = len(text)
+	}
+	for i := 0; i < offset; i++ {
+		if text[i] == '\n' {
+			line++
+			col = 1
+			continue
+		}
+		col++
+	}
+	return line, col
+}
+
+func dedupeOperations(in []*Operation) []*Operation {
+	seen := map[string]bool{}
+	out := make([]*Operation, 0, len(in))
+	for _, op := range in {
+		if op == nil {
+			continue
+		}
+		key := strings.ToUpper(op.Method) + " " + normalisePath(op.Path)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, op)
+	}
+	return out
 }
 
 // extractFileOperations walks a single module looking for route decorators and
@@ -534,15 +721,15 @@ func extractDecoratedRoute(node *tree_sitter.Node, source []byte, filePath strin
 }
 
 type routeDecorator struct {
-	Path        string
-	Methods     []string
-	Summary     string
-	Description string
-	Tags        []string
+	Path          string
+	Methods       []string
+	Summary       string
+	Description   string
+	Tags          []string
 	ResponseModel string
-	StatusCode  int
-	Deprecated  bool
-	Framework   string
+	StatusCode    int
+	Deprecated    bool
+	Framework     string
 	// Receiver is the variable name before the dot in the decorator target
 	// (e.g. "router" in @router.get("/items")). Empty for bare decorators.
 	Receiver string
@@ -797,6 +984,7 @@ func buildOperationFromFunc(funcDef *tree_sitter.Node, source []byte, filePath s
 		ResponseType:    strings.TrimSpace(rd.ResponseModel),
 		ResponseStatus:  rd.StatusCode,
 		Deprecated:      rd.Deprecated,
+		ResponseHeaders: extractPythonResponseHeaders(body, source),
 		File:            filePath,
 	}
 
@@ -819,6 +1007,40 @@ func buildOperationFromFunc(funcDef *tree_sitter.Node, source []byte, filePath s
 	}
 
 	return op
+}
+
+var (
+	rePythonResponseHeaderIndex = regexp.MustCompile(`(?m)(?:response|resp)\.headers\[\s*["']([^"']+)["']\s*\]\s*=`)
+	rePythonHeadersDict         = regexp.MustCompile(`(?s)headers\s*=\s*\{([^}]*)\}`)
+	rePythonHeaderDictKey       = regexp.MustCompile(`["']([^"']+)["']\s*:`)
+)
+
+func extractPythonResponseHeaders(body *tree_sitter.Node, source []byte) map[string]string {
+	if body == nil {
+		return nil
+	}
+	text := body.Utf8Text(source)
+	headers := map[string]string{}
+	for _, m := range rePythonResponseHeaderIndex.FindAllStringSubmatch(text, -1) {
+		addPythonResponseHeader(headers, m[1])
+	}
+	for _, dict := range rePythonHeadersDict.FindAllStringSubmatch(text, -1) {
+		for _, m := range rePythonHeaderDictKey.FindAllStringSubmatch(dict[1], -1) {
+			addPythonResponseHeader(headers, m[1])
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
+func addPythonResponseHeader(headers map[string]string, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.EqualFold(name, "Content-Type") {
+		return
+	}
+	headers[name] = name
 }
 
 // parseHandlerParameters converts the function signature into OpenAPI

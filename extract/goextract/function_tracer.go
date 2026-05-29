@@ -4,8 +4,11 @@ package goextract
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 	"strings"
+
+	"github.com/sailpoint-oss/cartographer/extract/sharedspec"
 )
 
 // FunctionTracer traces function calls recursively through the codebase.
@@ -34,6 +37,11 @@ type FunctionAnalysis struct {
 
 	// Success responses found in this function
 	SuccessResponses []SuccessResponseInfo
+
+	// AuthTokens are scope / role / permission strings extracted from any
+	// auth-requirement call inside the function body (or any helper this
+	// function calls). Populated by CollectAuthTokens.
+	AuthTokens []string
 
 	// Whether this function was fully analyzed
 	Complete bool
@@ -407,6 +415,123 @@ func extractTypeName(expr ast.Expr) string {
 		return t.Name
 	case *ast.SelectorExpr:
 		return t.Sel.Name
+	}
+	return ""
+}
+
+// CollectAuthTokens walks the handler function body looking for calls whose
+// simple name matches sharedspec.IsAuthFunctionName, extracts string-literal
+// (and resolvable string-constant) arguments, and recursively traces any
+// helper function calls inside the same package to follow the auth check
+// across the call graph.
+//
+// Cycle-safe (uses the same callStack the response tracer uses) and cached
+// (uses the same analysisCache).
+func (ft *FunctionTracer) CollectAuthTokens(funcDecl *ast.FuncDecl, info *types.Info) []string {
+	if funcDecl == nil || funcDecl.Body == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	out := ft.collectAuthTokens(funcDecl, info, seen)
+	return out
+}
+
+func (ft *FunctionTracer) collectAuthTokens(funcDecl *ast.FuncDecl, info *types.Info, dedup map[string]struct{}) []string {
+	var out []string
+	addToken := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if _, ok := dedup[s]; ok {
+			return
+		}
+		dedup[s] = struct{}{}
+		out = append(out, s)
+	}
+
+	ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := callSimpleName(call)
+		if name != "" && sharedspec.IsAuthFunctionName(name) {
+			for _, arg := range call.Args {
+				if v := extractAuthArgString(arg, info); v != "" {
+					addToken(v)
+				}
+			}
+			return true
+		}
+		// Recursively trace into helper-function calls (same module).
+		// Reuse the existing function tracer machinery: TraceFunction
+		// handles cycle detection and caching, so we won't loop.
+		if ft.shouldTraceCall(call, info) {
+			funcObj := ft.getFunctionObject(call, info)
+			if funcObj == nil {
+				return true
+			}
+			funcKey := ft.getFunctionKey(funcObj)
+			if ft.isInCallStack(funcKey) {
+				return true
+			}
+			helperDecl := ft.findFunctionDeclaration(funcKey, funcObj)
+			if helperDecl == nil || helperDecl.Body == nil {
+				return true
+			}
+			ft.callStack = append(ft.callStack, funcKey)
+			helperTokens := ft.collectAuthTokens(helperDecl, info, dedup)
+			ft.callStack = ft.callStack[:len(ft.callStack)-1]
+			out = append(out, helperTokens...)
+		}
+		return true
+	})
+	return out
+}
+
+// callSimpleName returns the simple identifier at the end of a call's
+// function expression (e.g. "RequireRights" for both `web.RequireRights(...)`
+// and `requireRights(...)`).
+func callSimpleName(call *ast.CallExpr) string {
+	switch fn := call.Fun.(type) {
+	case *ast.SelectorExpr:
+		return fn.Sel.Name
+	case *ast.Ident:
+		return fn.Name
+	}
+	return ""
+}
+
+// extractAuthArgString returns the string content of an argument when it is
+// a string literal or a named constant that resolves to a string. Bare
+// identifiers (e.g. a handler variable name) return "".
+func extractAuthArgString(expr ast.Expr, info *types.Info) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING && len(e.Value) >= 2 {
+			return e.Value[1 : len(e.Value)-1]
+		}
+	case *ast.Ident:
+		if info != nil && info.Uses != nil {
+			if obj := info.Uses[e]; obj != nil {
+				if c, ok := obj.(*types.Const); ok {
+					if v := c.Val().String(); len(v) >= 2 && v[0] == '"' {
+						return v[1 : len(v)-1]
+					}
+				}
+			}
+		}
+	case *ast.SelectorExpr:
+		if info != nil && info.Uses != nil {
+			if obj := info.Uses[e.Sel]; obj != nil {
+				if c, ok := obj.(*types.Const); ok {
+					if v := c.Val().String(); len(v) >= 2 && v[0] == '"' {
+						return v[1 : len(v)-1]
+					}
+				}
+			}
+		}
 	}
 	return ""
 }
