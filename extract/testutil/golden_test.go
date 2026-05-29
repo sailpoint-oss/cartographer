@@ -56,14 +56,29 @@ func TestNormalizeSourcePaths(t *testing.T) {
 	}
 }
 
+// enableGoldenUpdate sets -update for unit tests that write goldens; CI sets CI=true
+// globally, which must not block intentional update-mode tests.
+func enableGoldenUpdate(t *testing.T) func() {
+	t.Helper()
+	oldUpdate := *update
+	oldCI, hadCI := os.LookupEnv("CI")
+	*update = true
+	t.Setenv("CI", "")
+	return func() {
+		*update = oldUpdate
+		if hadCI {
+			t.Setenv("CI", oldCI)
+		} else {
+			t.Setenv("CI", "")
+		}
+	}
+}
+
 func TestAssertGoldenUpdate(t *testing.T) {
 	dir := t.TempDir()
 	goldenPath := filepath.Join(dir, "test.yaml")
 
-	// Simulate -update by setting the flag
-	old := *update
-	*update = true
-	defer func() { *update = old }()
+	defer enableGoldenUpdate(t)()
 
 	spec := map[string]any{
 		"openapi": "3.0.3",
@@ -96,11 +111,8 @@ func TestAssertGoldenMatch(t *testing.T) {
 		},
 	}
 
-	// First write golden
-	old := *update
-	*update = true
+	defer enableGoldenUpdate(t)()
 	AssertGolden(t, goldenPath, spec)
-	*update = old
 
 	// Then compare — should pass
 	AssertGolden(t, goldenPath, spec)
@@ -123,10 +135,8 @@ func TestAssertGoldenWithSection(t *testing.T) {
 		},
 	}
 
-	old := *update
-	*update = true
+	defer enableGoldenUpdate(t)()
 	AssertGolden(t, goldenPath, spec, WithSection("components", "schemas", "User"))
-	*update = old
 
 	content, err := os.ReadFile(goldenPath)
 	if err != nil {
@@ -191,9 +201,7 @@ func TestRunGoldenCases(t *testing.T) {
 		},
 	}
 
-	old := *update
-	*update = true
-	defer func() { *update = old }()
+	defer enableGoldenUpdate(t)()
 
 	RunGoldenCases(t, dir, nil, []GoldenCase{
 		{Name: "smoke", GoldenPath: "smoke.yaml", Spec: func(t *testing.T) map[string]any {
