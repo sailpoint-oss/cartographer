@@ -133,3 +133,13 @@ This repo is part of a six-repo OpenAPI toolchain:
 - [barrelman](https://github.com/sailpoint-oss/barrelman) — generic OpenAPI lint rules and plug-in surface
 - [telescope](https://github.com/sailpoint-oss/telescope) — VS Code extension, language server, and CLI built on the above
 - [barometer](https://github.com/sailpoint-oss/barometer) — live HTTP contract testing and Arazzo runner
+
+## Cursor Cloud specific instructions
+
+Cartographer is a batch Go CLI (module `github.com/sailpoint-oss/cartographer`) — there is no long-running server, database, or dev server to keep alive. "Running the app" means building the `cartographer` binary and invoking an extraction. Standard commands live in the **Build and test commands** section above; a few non-obvious notes:
+
+- **Toolchain:** Requires Go 1.25.x (see `go.mod`). The startup update script runs `go mod download`; a plain `make build` also fetches deps.
+- **Lint/CI gate:** CI (`.github/workflows/cartographer.yml`) only gates on `go build` + `go test ./...`. `go vet ./...` is clean, but `gofmt -l .` reports many pre-existing unformatted files — this is expected, is NOT a CI gate, and you should NOT run `gofmt -w` broadly to "fix" it.
+- **Quick end-to-end smoke test** (no external service needed — fixtures are bundled): `./cartographer extract --lang go --root extract/testdata/go-http --title "Go HTTP Demo" --output /tmp/go-http-openapi.yaml`. Other languages have fixtures under `extract/testdata/` (`python-fastapi`, `csharp-minimal`, `java-*`, `ts-*`).
+- **Nested module:** `extract/testdata/go-http/` has its own `go.mod`; `go test ./...` from the repo root intentionally does not descend into it.
+- Golden snapshots live in `extract/testdata/golden/e2e/`; refresh only via `make test-golden-update` when output changes are intended.
